@@ -1,0 +1,96 @@
+/**
+ * ===================================================================================
+ * BOT-READY FETCH-ONLY SCRIPT (GET-only, Robust)
+ * ===================================================================================
+ * Handles truck lookups and row fetches via GET requests.
+ * Compatible with your Node.js WhatsApp bot.
+ */
+
+function doGet(e) {
+  try {
+    const action = e.parameter.action;
+    const sheetName = e.parameter.sheet;
+    const query = e.parameter.query;
+
+    let result;
+    if (action === 'getTruckStatus' && sheetName && query) {
+      result = handleFindTruck(sheetName, query);
+    } else if (action === 'getRowDetails' && sheetName && query) {
+      const rowNumber = parseInt(query, 10);
+      if (isNaN(rowNumber)) {
+        result = { success: false, message: "Invalid row number provided." };
+      } else {
+        result = handleGetRow(sheetName, rowNumber);
+      }
+    } else {
+      result = { success: false, message: "Invalid action or missing parameters." };
+    }
+
+    return ContentService.createTextOutput(JSON.stringify(result))
+                         .setMimeType(ContentService.MimeType.JSON);
+
+  } catch (err) {
+    const errorResult = { success: false, message: `Script error: ${err.message}` };
+    return ContentService.createTextOutput(JSON.stringify(errorResult))
+                         .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function handleGetRow(sheetName, rowNumber) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet) {
+    return { success: false, message: `Sheet '${sheetName}' not found.` };
+  }
+
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  if (rowNumber <= 1 || rowNumber > sheet.getLastRow()) {
+    return { success: false, message: `Row ${rowNumber} is out of bounds.` };
+  }
+
+  const rowData = sheet.getRange(rowNumber, 1, 1, headers.length).getValues()[0];
+  if (!rowData || rowData.every(v => v === "")) {
+    return { success: false, message: `Row ${rowNumber} is empty or contains no data.` };
+  }
+
+  const result = { ROW_NUMBER: rowNumber };
+  for (let i = 0; i < headers.length; i++) {
+    result[headers[i]] = rowData[i];
+  }
+
+  return { success: true, message: `Data for row ${rowNumber} retrieved.`, data: [result] };
+}
+
+function handleFindTruck(sheetName, truckNo) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet) {
+    return { success: false, message: `Sheet '${sheetName}' not found.` };
+  }
+
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const rows = sheet.getDataRange().getValues();
+  const truckColIndex = headers.findIndex(h => h.toLowerCase().includes('truck'));
+
+  if (truckColIndex === -1) {
+    return { success: false, message: "Could not find a 'Truck' column in the sheet." };
+  }
+
+  const search = truckNo.toLowerCase();
+  const matches = [];
+
+  for (let i = 1; i < rows.length; i++) {
+    const val = (rows[i][truckColIndex] || '').toString().toLowerCase();
+    if (val.includes(search)) {
+      const rowObj = { ROW_NUMBER: i + 1 };
+      for (let j = 0; j < headers.length; j++) {
+        rowObj[headers[j]] = rows[i][j];
+      }
+      matches.push(rowObj);
+    }
+  }
+
+  if (matches.length === 0) {
+    return { success: false, message: `No truck found matching '${truckNo}'.` };
+  }
+
+  return { success: true, message: `Found ${matches.length} match(es) for '${truckNo}'.`, data: matches };
+}

@@ -14,7 +14,7 @@ const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 const SCRIPT_URL = process.env.SCRIPT_URL;
 const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
-const VERCEL_URL = process.env.VERCEL_URL; // e.g. https://your-app.vercel.app
+const VERCEL_URL = process.env.VERCEL_URL;
 
 const bot = new Telegraf(TELEGRAM_TOKEN);
 
@@ -45,74 +45,60 @@ function generatePDF(data, filename = 'report.pdf') {
 }
 
 async function notifyAdmin(msg) {
-  // Optionally send a message to admin via Telegram API
   if (ADMIN_CHAT_ID) {
-    await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: ADMIN_CHAT_ID, text: `[ADMIN NOTICE]\n${msg}` }),
-    });
+    await bot.telegram.sendMessage(ADMIN_CHAT_ID, `[ADMIN NOTICE]\n${msg}`);
   }
 }
 
-// === MAIN HANDLER ===
-export default async function handler(request, response) {
-  if (request.method === 'POST') {
-    try {
-      await bot.handleUpdate(request.body, response);
-    } catch (err) {
-      console.error('Error handling update', err);
-      response.status(500).send('Error handling update');
-    }
-  } else {
-    response.status(200).send('OK');
-  }
-}
+// === COMMANDS ===
+bot.start((ctx) =>
+  ctx.reply('Welcome! Use /status <truckNo>, /row <rowNo>, /help, /format, /system, /testpdf, /newtruck')
+);
 
-// === Telegram API helpers ===
-async function sendMessage(chatId, text, parse_mode) {
-  await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      ...(parse_mode ? { parse_mode } : {}),
-    }),
-  });
-}
+bot.command('help', (ctx) =>
+  ctx.reply(
+    `*Welcome to Issaerium bot chat, a smart way of working!* 🤖
 
-async function sendDocument(chatId, buffer, filename) {
-  // Telegram sendDocument via HTTP API with multipart/form-data
-  // Use fetch + FormData (node-fetch v2 does not support FormData natively)
-  // Use 'form-data' package for this in production, but here is a minimal workaround:
-  const FormData = (await import('form-data')).default;
-  const form = new FormData();
-  form.append('chat_id', chatId);
-  form.append('document', buffer, { filename });
+Commands:
+$status <reg_no> - Check truck status
+/row <row_no> - Get details for a specific row
+/report <truckNo> - Email a repair report
+/format - Show format instructions
+/system - Show bot system status
+/testpdf - Generate sample PDF
+/newtruck - Guided truck entry wizard
 
-  await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendDocument`, {
-    method: 'POST',
-    body: form,
-    headers: form.getHeaders(),
-  });
-}
+Send plain text for maintenance/overnight/overstay reports.
+`,
+    { parse_mode: 'Markdown' }
+  )
+);
 
-// Define your bot commands here
-bot.command('start', (ctx) => ctx.reply('Welcome to the Telegram bot!'));
-bot.command('ping', (ctx) => ctx.reply('🏓 Pong!'));
-bot.on('text', (ctx) => ctx.reply(`Echo: ${ctx.message.text}`));
+bot.command('format', (ctx) =>
+  ctx.reply(
+    `📝 *Maintenance Report Format*
+Registration Number
+Driver Name
+Mobile Number
+Location
+[Your Email Address - anywhere in msg]
+Optional: entry: [Entry Number], hours: [24 or 48], team: [Team Name]
+Example:
+KCC492P/ZG1633
+YUSSUF MAALIM
+0722809260
+HASS PETROLEUM ELDORET DEPOT
+driver@company.com
+team: Nairobi
+hours: 48
+`,
+    { parse_mode: 'Markdown' }
+  )
+);
 
-// Handle webhook updates
-bot.telegram.setWebhook(`${VERCEL_URL}/api/bot`);
-
-// Register command handlers
 bot.command('status', async (ctx) => {
   const args = ctx.message.text.split(' ');
-  if (args.length < 2) {
-    return ctx.reply('Please provide a truck number: /status <truckNo>');
-  }
-  
+  if (args.length < 2) return ctx.reply('Usage: /status <truckNo>');
   const truck = args.slice(1).join(' ');
   try {
     const url = `${SCRIPT_URL}?action=getTruckStatus&sheet=TRANSIT&query=${encodeURIComponent(truck)}`;
@@ -135,9 +121,8 @@ bot.command('status', async (ctx) => {
 bot.command('row', async (ctx) => {
   const args = ctx.message.text.split(' ');
   if (args.length < 2 || isNaN(parseInt(args[1]))) {
-    return ctx.reply('Please provide a row number: /row <rowNo>');
+    return ctx.reply('Usage: /row <rowNo>');
   }
-  
   const row = parseInt(args[1]);
   try {
     const url = `${SCRIPT_URL}?action=getRowDetails&sheet=TRANSIT&query=${row}`;
@@ -147,8 +132,6 @@ bot.command('row', async (ctx) => {
 
     const details = json.data[0];
     const pdfBuffer = await generatePDF(details);
-
-    // Send PDF as document
     await ctx.replyWithDocument({ source: pdfBuffer, filename: `Row${row}-Report.pdf` });
   } catch (err) {
     await ctx.reply(`⚠️ PDF Generation Failed: ${err.message}`);
@@ -158,10 +141,7 @@ bot.command('row', async (ctx) => {
 
 bot.command('report', async (ctx) => {
   const args = ctx.message.text.split(' ');
-  if (args.length < 2) {
-    return ctx.reply('Please provide a truck number: /report <truckNo>');
-  }
-  
+  if (args.length < 2) return ctx.reply('Usage: /report <truckNo>');
   const truck = args.slice(1).join(' ');
   try {
     const url = `${SCRIPT_URL}?action=getTruckStatus&sheet=TRANSIT&query=${encodeURIComponent(truck)}`;
@@ -187,7 +167,43 @@ bot.command('report', async (ctx) => {
   }
 });
 
-// Handle unknown commands or messages
-bot.on('text', (ctx) => {
-  ctx.reply(`❓ Unknown input. Use /status <truck> or /row <rowNo>`);
+bot.command('system', (ctx) =>
+  ctx.reply('✅ Bot is running. All systems nominal.')
+);
+
+bot.command('testpdf', async (ctx) => {
+  try {
+    const details = {
+      reg_no: 'KCC492P/ZG1633',
+      driver_name: 'YUSSUF MAALIM',
+      driver_no: '0722809260',
+      location: 'HASS PETROLEUM ELDORET DEPOT',
+      email: 'driver@company.com',
+    };
+    const pdfBuffer = await generatePDF(details);
+    await ctx.replyWithDocument({ source: pdfBuffer, filename: 'Test-Repair-Report.pdf' });
+  } catch (err) {
+    await ctx.reply(`❌ PDF Generation Failed: ${err.message}`);
+  }
 });
+
+// You can add /newtruck and advanced logic here as needed
+
+// Fallback for unknown commands or plain text
+bot.on('text', (ctx) => {
+  ctx.reply('❓ Unknown input. Use /status <truckNo> or /row <rowNo>');
+});
+
+// === Vercel Webhook Handler ===
+export default async function handler(req, res) {
+  if (req.method === 'POST') {
+    try {
+      await bot.handleUpdate(req.body, res);
+    } catch (err) {
+      console.error('Error handling update', err);
+      res.status(500).send('Error handling update');
+    }
+  } else {
+    res.status(200).send('OK');
+  }
+}
