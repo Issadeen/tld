@@ -1,12 +1,13 @@
 // telegram-bot.js
 // Full Port of WhatsApp bot (wpp-bot.js) to Telegram using node-telegram-bot-api
 
-const TelegramBot = require('node-telegram-bot-api');
-const fetch = require('node-fetch');
-const PDFDocument = require('pdfkit');
-const fs = require('fs');
-const nodemailer = require('nodemailer');
-require('dotenv').config();
+import TelegramBot from 'node-telegram-bot-api';
+import fetch from 'node-fetch';
+import PDFDocument from 'pdfkit';
+import fs from 'fs';
+import nodemailer from 'nodemailer';
+import dotenv from 'dotenv';
+dotenv.config();
 
 // === CONFIG ===
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN; // BotFather Token
