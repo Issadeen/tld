@@ -35,6 +35,22 @@ const transporter = nodemailer.createTransport({
 });
 
 // === HELPERS ===
+// Add a new helper to fetch images from URLs
+async function fetchImageFromUrl(url) {
+  if (!url) return null;
+  try {
+    console.log(`Fetching image from URL: ${url}`);
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch image: ${response.status} ${response.statusText}`);
+    }
+    return await response.buffer();
+  } catch (error) {
+    console.error(`Error fetching image from URL: ${error.message}`);
+    return null;
+  }
+}
+
 function getNairobiTimeString(type = 'date') {
   const now = new Date();
   const options = { timeZone: 'Africa/Nairobi' };
@@ -135,6 +151,17 @@ async function generateReportPdf(data, reportType) {
                 }
             }
 
+            // --- Fetch Logo Image if it's a URL ---
+            let logoImageBuffer = null;
+            if (LOGO_IMAGE_URL && LOGO_IMAGE_URL.startsWith('http')) {
+                try {
+                    logoImageBuffer = await fetchImageFromUrl(LOGO_IMAGE_URL);
+                    console.log(`[PDF Debug] Logo image fetched successfully (${logoImageBuffer ? logoImageBuffer.length : 0} bytes)`);
+                } catch (logoFetchErr) {
+                    console.error("Error fetching logo image:", logoFetchErr);
+                }
+            }
+
             // --- PDFKit Event Handlers ---
             doc.on('data', buffers.push.bind(buffers));
             doc.on('end', () => {
@@ -224,16 +251,29 @@ async function generateReportPdf(data, reportType) {
                 radius: 8
             });
 
-            // Logo placement (if available)
+            // Logo placement (if available) - Updated with proper buffer handling
             if (LOGO_IMAGE_URL) {
                 try {
                     const logoSize = 60;
-                    doc.image(LOGO_IMAGE_URL, doc.page.margins.left + 15, currentY + 10, {
-                        fit: [logoSize, logoSize],
-                        align: 'left'
-                    });
+                    if (logoImageBuffer) {
+                        // Use the fetched buffer
+                        doc.image(logoImageBuffer, doc.page.margins.left + 15, currentY + 10, {
+                            fit: [logoSize, logoSize],
+                            align: 'left'
+                        });
+                    } else if (LOGO_IMAGE_URL.startsWith('/') || !LOGO_IMAGE_URL.startsWith('http')) {
+                        // If it's a local file path
+                        doc.image(LOGO_IMAGE_URL, doc.page.margins.left + 15, currentY + 10, {
+                            fit: [logoSize, logoSize],
+                            align: 'left'
+                        });
+                    } else {
+                        // If fetch failed or is not implemented, log but don't fail
+                        console.warn("Could not load logo image from URL");
+                    }
                 } catch(logoErr) {
                     console.error("Error placing logo in PDF:", logoErr);
+                    // Don't throw so PDF generation continues
                 }
             }
 
@@ -856,45 +896,69 @@ bot.on('text', async (ctx) => {
     }
     // Check for email in any line
     else if (/@/.test(line) && !emailFound) {
-            const match = line.match(/[A-Za-z0-9._%+-]+@[A-ZaZ0-9.-]+\.[A-Za-z]{2,}/);
-            if (match) {
-              data.email = match[0];
-              emailFound = true;
-            }
-          }
-        }
-        
-        // Continue with processing the repair report
-        try {
-          // Generate email body
-          const emailBody = createRepairEmailBody(data);
-          
-          // Generate PDF
-          const pdfBuffer = await generateReportPdf(data, 'repair');  // Changed to generateReportPdf
-          
-          // Send PDF to user
-          await ctx.replyWithDocument({ source: pdfBuffer, filename: `${data.reg_no}-Report.pdf` });
-          
-          // Send email if we have an email address
-          if (data.email) {
-            await transporter.sendMail({
-              from: SMTP_USER,
-              to: data.email,
-              subject: `Repair Report - ${data.reg_no}`,
-              text: emailBody,
-              attachments: [{ filename: `${data.reg_no}.pdf`, content: pdfBuffer }],
-            });
-            
-            await ctx.replyWithMarkdown(`📧 Email sent to ${data.email} for *${data.reg_no}*`);
-          } else {
-            await ctx.reply("Report created but no email address found to send to.");
-          }
-        } catch (err) {
-          await ctx.reply(`❌ Report Generation Failed: ${err.message}`);
-          await notifyAdmin(`Error creating repair report: ${err.message}`);
-        }
+      const match = line.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
+      if (match) {
+        data.email = match[0];
+        emailFound = true;
+      }
+    }
+  }
+  
+  // Continue with processing the repair report
+  try {
+    // Check for required fields
+    const missing = [];
+    if (!data.reg_no) missing.push('Registration Number');
+    if (!data.driver_name) missing.push('Driver Name');
+    if (!data.driver_no) missing.push('Mobile Number');
+    if (!data.location) missing.push('Location');
+    
+    if (missing.length > 0) {
+      await ctx.reply(`⚠️ Missing required fields: ${missing.join(', ')}`);
+      return;
+    }
+    
+    await ctx.reply(`🛠️ Processing maintenance report for *${data.reg_no}*...`, { parse_mode: 'Markdown' });
+    
+    // Generate email body
+    const emailBody = createRepairEmailBody(data);
+    
+    // Generate PDF - it returns a base64 string
+    const pdfBase64 = await generateReportPdf(data, 'repair');
+    
+    // Convert base64 string to buffer
+    const pdfBuffer = Buffer.from(pdfBase64, 'base64');
+    
+    // Send PDF to user
+    await ctx.replyWithDocument({ 
+      source: pdfBuffer, 
+      filename: `${data.reg_no.replace(/[^a-zA-Z0-9]/g, '_')}-Report.pdf` 
+    });
+    
+    // Send email if we have an email address
+    if (data.email) {
+      await transporter.sendMail({
+        from: SMTP_USER,
+        to: data.email,
+        subject: `Repair Report - ${data.reg_no}`,
+        text: emailBody,
+        attachments: [{ 
+          filename: `${data.reg_no.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`, 
+          content: pdfBuffer 
+        }],
       });
       
+      await ctx.replyWithMarkdown(`📧 Email sent to ${data.email} for *${data.reg_no}*`);
+    } else {
+      await ctx.reply("Report created but no email address found to send to.");
+    }
+  } catch (err) {
+    console.error('Error processing repair report:', err);
+    await ctx.reply(`❌ Report Generation Failed: ${err.message}`);
+    await notifyAdmin(`Error creating repair report: ${err.message}`);
+  }
+});
+
 // === Vercel Webhook Handler ===
 const handler = async (req, res) => {
   if (req.method === 'POST') {
