@@ -529,15 +529,31 @@ bot.on('text', async (ctx) => {
         }
       });
       
-      // Launch bot
-      bot.launch().then(() => {
-        console.log('Bot started successfully');
-      }).catch(err => {
-        console.error('Error starting bot:', err);
-      });
-      
-      // Enable graceful stop
-      process.once('SIGINT', () => bot.stop('SIGINT'));
-      process.once('SIGTERM', () => bot.stop('SIGTERM'));
-      
-      export default bot;
+// === Vercel Webhook Handler ===
+const handler = async (req, res) => {
+  if (req.method === 'POST') {
+    try {
+      await bot.handleUpdate(req.body, res);
+    } catch (err) {
+      console.error('Error handling update', err);
+      res.status(500).send('Error handling update');
+    }
+  } else {
+    res.status(200).send('OK');
+  }
+};
+
+// Launch bot only in development
+if (process.env.NODE_ENV !== 'production') {
+  bot.launch().then(() => {
+    console.log('Bot started in development mode');
+  }).catch(err => {
+    console.error('Error starting bot:', err);
+  });
+  
+  // Enable graceful stop
+  process.once('SIGINT', () => bot.stop('SIGINT'));
+  process.once('SIGTERM', () => bot.stop('SIGTERM'));
+}
+
+export default handler;  // Export the handler function instead of the bot
