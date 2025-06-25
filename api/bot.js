@@ -55,8 +55,20 @@ async function notifyAdmin(msg) {
 
 // === MAIN HANDLER ===
 export default async function handler(req, res) {
-  // Optional: Set webhook via GET /setwebhook
-  if (req.method === 'GET' && req.url && req.url.startsWith('/setwebhook')) {
+  // Support both /setwebhook path and ?setwebhook query
+  const url = req.url || '';
+  const hasSetWebhookQuery =
+    (req.query && req.query.setwebhook !== undefined) ||
+    url.includes('?setwebhook') ||
+    url.includes('&setwebhook');
+
+  if (
+    req.method === 'GET' &&
+    (
+      (url && url.startsWith('/setwebhook')) ||
+      hasSetWebhookQuery
+    )
+  ) {
     if (!VERCEL_URL) {
       res.status(400).json({ error: 'VERCEL_URL env var required' });
       return;
