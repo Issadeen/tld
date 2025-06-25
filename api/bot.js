@@ -55,207 +55,567 @@ function createRepairEmailBody(data) {
   return `Date: ${dateStr}\n\nDear RRU Team ${data.team || 'Eldoret'},\n\nTRUCK MAINTENANCE NOTIFICATION - ${data.reg_no}\n\nThe truck below has developed a mechanical problem and will be undergoing repairs.\n\nVehicle & Driver Details:\n----------------------\n• Registration Number: ${data.reg_no}${entryInfo}\n• Driver's Name: ${data.driver_name}\n• Mobile Number: ${data.driver_no}\n\nMaintenance Information:\n---------------------\n• Location: ${data.location}\n• Site Details: Along Uganda Road\n• Cargo Type: WET CARGO\n• Expected Duration: ${data.duration || 24} hours\n\nThank you for your attention to this matter.`;
 }
 
-function generatePDF(data, filename = 'report.pdf') {
-  return new Promise(async (resolve, reject) => {
-    try {
-      const doc = new PDFDocument({ margin: 40, size: 'A4', bufferPages: true, autoFirstPage: false });
-      doc.addPage();
-      const chunks = [];
-      const dateStr = getNairobiTimeString();
-      const dateTimeStr = getNairobiTimeString('datetime');
+// --- PDF Generation Function (with QR Code and Remote Watermark) ---
+async function generateReportPdf(data, reportType) {
+    // --- Implementation copied from backupd.js ---
+    console.log(`[PDF Gen Start] Type: ${reportType}, ID: ${(reportType === 'repair' ? data.reg_no : data.omc_name) || 'N/A'}`); // Added logging
+    const generationTimeout = 20000; // Increased timeout for network fetch
+    let timeoutId;
+    return new Promise(async (resolve, reject) => {
+        timeoutId = setTimeout(() => {
+            console.error(`PDF Generation Timeout (${generationTimeout}ms)`);
+            reject(new Error(`PDF generation timed out.`));
+        }, generationTimeout);
 
-      doc.on('data', chunk => chunks.push(chunk));
-      doc.on('end', () => resolve(Buffer.concat(chunks)));
-
-      // === COLORS ===
-      const colors = {
-        primary: '#1a237e',
-        secondary: '#303f9f',
-        text: '#424242',
-        light: '#e3f2fd',
-        accent: '#ff9800',
-        background: '#f9f9f9',
-        border: '#9fa8da'
-      };
-
-      // === Add text watermark ===
-      try {
-        doc.save();
-        const centerX = doc.page.width / 2;
-        const centerY = doc.page.height / 2;
-        doc.fillColor('#f0f0f0')
-           .fontSize(78)
-           .opacity(0.13)
-           .rotate(-40, { origin: [centerX, centerY] })
-           .text('URGENT REPAIR', 0, centerY, { align: 'center', width: doc.page.width });
-        doc.restore();
-      } catch (e) {
-        console.error("Error drawing watermark:", e);
-      }
-
-      // === HEADER ===
-      let currentY = doc.page.margins.top;
-      const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-
-      // Header box
-      doc.rect(doc.page.margins.left, currentY, pageWidth, 80)
-         .fillAndStroke('#f5f5ff', colors.primary)
-         .stroke();
-
-      // Logo placement (if available)
-      if (process.env.LOGO_IMAGE_URL) {
         try {
-          const logoSize = 60;
-          doc.image(process.env.LOGO_IMAGE_URL, doc.page.margins.left + 15, currentY + 10, {
-            fit: [logoSize, logoSize],
-            align: 'left'
-          });
-        } catch (logoErr) {
-          console.error("Error placing logo in PDF:", logoErr);
+            const doc = new PDFDocument({ margin: 40, size: 'A4', bufferPages: true, autoFirstPage: false });
+            doc.addPage();
+            const buffers = [];
+            const dateStr = getNairobiTimeString();
+            const dateTimeStr = getNairobiTimeString('datetime');
+
+            // PDF Styling Constants
+            const colors = {
+                primary: '#1a237e',     // Dark blue for headings
+                secondary: '#303f9f',   // Medium blue for subheadings
+                text: '#424242',        // Dark grey for main text
+                light: '#e3f2fd',       // Light blue for dividers
+                accent: '#ff9800',      // Orange for highlights
+                background: '#f9f9f9',  // Light grey for boxes/sections
+                border: '#9fa8da'       // Border color
+            };
+
+            // --- QR CODE Generation ---
+            let qrCodeData = null;
+            let qrCodeText = '';
+            const qrSize = 60; // Increased QR size
+            try {
+                if (reportType === 'repair') {
+                    qrCodeText = `REPAIR\nReg: ${data.reg_no}\nTeam: ${data.team || 'Eldoret'}\nLoc: ${data.location || 'N/A'}\nTime: ${dateTimeStr}`;
+                } else {
+                    qrCodeText = `${reportType.toUpperCase()}\nOMC: ${data.omc_name || 'N/A'}\nTime: ${dateTimeStr}\nTrucks: ${data.trucks.length}`;
+                }
+                const maxQrLength = 200;
+                if (qrCodeText.length > maxQrLength) {
+                    qrCodeText = qrCodeText.substring(0, maxQrLength - 3) + "...";
+                    console.warn("[PDF Debug] QR Code text truncated.");
+                }
+                qrCodeData = await qrcode.toBuffer(qrCodeText, {
+                    errorCorrectionLevel: 'M',
+                    type: 'png',
+                    margin: 1,
+                    scale: 4
+                });
+                console.log(`[PDF Debug] QR Code generated successfully.`);
+            } catch (qrError) {
+                console.error("Error generating QR Code:", qrError);
+                await notifyAdmin(`*PDF QR Code Gen Error:*\nType: ${reportType}\nError: ${qrError.message || qrError}`);
+            }
+
+            // --- Fetch Tanker Image ---
+            let tankerImageBuffer = null;
+            if (reportType === 'repair' && TANKER_IMAGE_URL) {
+                console.log(`[PDF Debug] Fetching tanker image from: ${TANKER_IMAGE_URL}`);
+                try {
+                    const response = await fetch(TANKER_IMAGE_URL);
+                    if (!response.ok) {
+                        throw new Error(`Failed to fetch image: ${response.status} ${response.statusText}`);
+                    }
+                    tankerImageBuffer = await response.buffer();
+                    console.log(`[PDF Debug] Tanker image fetched successfully (${tankerImageBuffer.length} bytes)`);
+                } catch (fetchError) {
+                    console.error("Error fetching tanker watermark image:", fetchError);
+                    await notifyAdmin(`*PDF Tanker Watermark Fetch Error:*\nURL: ${TANKER_IMAGE_URL}\nError: ${fetchError.message || fetchError}`);
+                }
+            }
+
+            // --- PDFKit Event Handlers ---
+            doc.on('data', buffers.push.bind(buffers));
+            doc.on('end', () => {
+                clearTimeout(timeoutId);
+                try {
+                    const pdfData = Buffer.concat(buffers);
+                    if (pdfData.length === 0) {
+                        reject(new Error("Generated PDF buffer was empty."));
+                    } else {
+                        resolve(pdfData.toString('base64'));
+                    }
+                } catch (e) {
+                    reject(new Error("Internal error finalizing PDF data."));
+                }
+            });
+            doc.on('error', (err) => {
+                clearTimeout(timeoutId);
+                reject(err);
+            });
+
+            // --- Helper Functions for PDF Generation ---
+            const drawBox = (x, y, width, height, options = {}) => {
+                const radius = options.radius || 5;
+                const fillColor = options.fillColor || colors.background;
+                const strokeColor = options.strokeColor || colors.border;
+                const lineWidth = options.lineWidth || 1;
+                doc.save()
+                   .roundedRect(x, y, width, height, radius)
+                   .fillAndStroke(fillColor, strokeColor)
+                   .lineWidth(lineWidth)
+                   .restore();
+                return y + height;
+            };
+
+            const drawSection = (title, contentY, contentCallback) => {
+                const marginX = 50;
+                const marginY = 15;
+                const width = doc.page.width - (marginX * 2);
+                // Section header
+                doc.save()
+                   .fillColor(colors.primary)
+                   .fontSize(12)
+                   .font('Helvetica-Bold')
+                   .text(title, marginX, contentY, { width })
+                   .restore();
+                // Border line under section title
+                doc.save()
+                   .strokeColor(colors.primary)
+                   .lineWidth(1)
+                   .moveTo(marginX, contentY + 20)
+                   .lineTo(marginX + width, contentY + 20)
+                   .stroke()
+                   .restore();
+                // Call content callback with position for content
+                contentY += 30;
+                if (contentCallback) {
+                    contentY = contentCallback(marginX, contentY, width);
+                }
+                return contentY + marginY; // Return the new Y position
+            };
+
+            // --- Watermark (Text & Image) ---
+            const addWatermark = (text, isRepair = false) => {
+                try {
+                    doc.save();
+                    const centerX = doc.page.width / 2;
+                    const centerY = doc.page.height / 2;
+                    doc.fillColor('#f0f0f0').fontSize(isRepair ? 78 : 64).opacity(0.13).rotate(-40, {origin: [centerX, centerY]})
+                       .text(text, 0, centerY, {align: 'center', width: doc.page.width});
+                    doc.restore();
+                } catch (e) {
+                    console.error("Error drawing watermark:", e);
+                }
+            };
+            if (reportType === 'repair') addWatermark("URGENT REPAIR", true);
+            else addWatermark(reportType.toUpperCase() + " STAY", false);
+
+            // --- PDF Header ---
+            let currentY = doc.page.margins.top;
+            const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+            // Header box
+            const headerHeight = 80;
+            drawBox(doc.page.margins.left, currentY, pageWidth, headerHeight, {
+                fillColor: '#f5f5ff',
+                strokeColor: colors.primary,
+                lineWidth: 1.5,
+                radius: 8
+            });
+
+            // Logo placement (if available)
+            if (LOGO_IMAGE_URL) {
+                try {
+                    const logoSize = 60;
+                    doc.image(LOGO_IMAGE_URL, doc.page.margins.left + 15, currentY + 10, {
+                        fit: [logoSize, logoSize],
+                        align: 'left'
+                    });
+                } catch(logoErr) {
+                    console.error("Error placing logo in PDF:", logoErr);
+                }
+            }
+
+            // Company name and report title
+            const titleX = LOGO_IMAGE_URL ? doc.page.margins.left + 90 : doc.page.margins.left + 15;
+            doc.fontSize(16)
+               .font('Helvetica-Bold')
+               .fillColor(colors.primary)
+               .text(COMPANY_NAME, titleX, currentY + 15);
+            doc.fontSize(14)
+               .fillColor(colors.secondary)
+               .text(reportType === 'repair' ? 'TRUCK MAINTENANCE NOTIFICATION' :
+                    `${reportType.toUpperCase()} TRUCKS NOTIFICATION`,
+                    titleX, currentY + 35);
+
+            // Registration number highlight for repair reports
+            if (reportType === 'repair' && data.reg_no) {
+                doc.save()
+                   .roundedRect(titleX, currentY + 55, 180, 20, 4)
+                   .fillAndStroke('#e3f2fd', colors.secondary);
+                doc.fillColor(colors.secondary)
+                   .fontSize(12)
+                   .font('Helvetica-Bold')
+                   .text(data.reg_no, titleX + 5, currentY + 58);
+                doc.restore();
+            }
+
+            currentY += headerHeight + 20; // Move below header with spacing
+
+            // --- Content Sections based on report type ---
+            if (reportType === 'repair') {
+                // Content for Repair Report
+                currentY = drawSection('Vehicle & Driver Details', currentY, (x, y, width) => {
+                    const boxHeight = 100;
+                    const endY = drawBox(x, y, width, boxHeight, {
+                        fillColor: '#fcfcff',
+                        strokeColor: colors.border
+                    });
+
+                    const detailsX = x + 15;
+                    const detailsY = y + 15;
+                    const colWidth = width / 2 - 20;
+
+                    // Column 1
+                    doc.font('Helvetica-Bold')
+                       .fontSize(10)
+                       .fillColor(colors.secondary)
+                       .text('Registration Number:', detailsX, detailsY);
+
+                    doc.font('Helvetica')
+                       .fontSize(10)
+                       .fillColor(colors.text)
+                       .text(data.reg_no || 'N/A', detailsX + 120, detailsY, { width: colWidth });
+
+                    // Entry number (if available)
+                    if (data.entry_no) {
+                        doc.font('Helvetica-Bold')
+                           .fontSize(10)
+                           .fillColor(colors.secondary)
+                           .text('Entry Number:', detailsX, detailsY + 25);
+
+                        doc.font('Helvetica')
+                           .fontSize(10)
+                           .fillColor(colors.text)
+                           .text(data.entry_no, detailsX + 120, detailsY + 25, { width: colWidth });
+                    }
+
+                    // Column 2
+                    const col2X = x + width/2 + 10;
+                    doc.font('Helvetica-Bold')
+                       .fontSize(10)
+                       .fillColor(colors.secondary)
+                       .text('Driver\'s Name:', col2X, detailsY);
+
+                    doc.font('Helvetica')
+                       .fontSize(10)
+                       .fillColor(colors.text)
+                       .text(data.driver_name || 'N/A', col2X + 85, detailsY, { width: colWidth });
+
+                    doc.font('Helvetica-Bold')
+                       .fontSize(10)
+                       .fillColor(colors.secondary)
+                       .text('Mobile Number:', col2X, detailsY + 25);
+
+                    doc.font('Helvetica')
+                       .fontSize(10)
+                       .fillColor(colors.text)
+                       .text(data.driver_no || 'N/A', col2X + 85, detailsY + 25, { width: colWidth });
+
+                    // Add driver contact button/box with phone icon
+                    if (data.driver_no) {
+                        const buttonY = detailsY + 50;
+                        const buttonWidth = 180;
+                        doc.save()
+                            .roundedRect(col2X, buttonY, buttonWidth, 25, 5)
+                            .fillAndStroke('#4caf50', '#2e7d32')
+                            .restore();
+
+                        // Add phone icon
+                        doc.save()
+                            .roundedRect(col2X + 5, buttonY + 5, 15, 15, 3)
+                            .fill('white');
+                        // Simple phone receiver
+                        doc.moveTo(col2X + 8, buttonY + 8)
+                            .lineTo(col2X + 17, buttonY + 17)
+                            .lineWidth(2)
+                            .stroke('white');
+
+                        doc.font('Helvetica-Bold')
+                            .fontSize(9)
+                            .fillColor('white')
+                            .text(`CONTACT DRIVER: ${data.driver_no}`, col2X + 25, buttonY + 8,
+                                  { width: buttonWidth - 30, align: 'left' });
+                    }
+
+                    return endY;
+                });
+
+                currentY += 10;
+
+                // Maintenance details section
+                currentY = drawSection('Maintenance Information', currentY, (x, y, width) => {
+                    const boxHeight = 120;
+                    const endY = drawBox(x, y, width, boxHeight, {
+                        fillColor: '#fcfcff',
+                        strokeColor: colors.border
+                    });
+
+                    const detailsX = x + 15;
+                    const detailsY = y + 15;
+
+                    // Location with styled heading
+                    doc.font('Helvetica-Bold')
+                       .fontSize(10)
+                       .fillColor(colors.secondary)
+                       .text('Location:', detailsX, detailsY);
+
+                    // Location with highlight box
+                    const locationBoxY = detailsY + 5;
+                    const locationText = data.location || 'N/A';
+                    doc.font('Helvetica')
+                       .fontSize(12);
+
+                    // Calculate text dimensions
+                    const locationWidth = Math.min(doc.widthOfString(locationText) + 20, width - 100);
+                    const locationHeight = 25;
+
+                    // Draw highlight box for location
+                    doc.save()
+                       .roundedRect(detailsX + 70, locationBoxY, locationWidth, locationHeight, 4)
+                       .fillAndStroke('#e8f5e9', '#81c784')
+                       .restore();
+
+                    doc.fillColor('#2e7d32')
+                       .text(locationText, detailsX + 80, locationBoxY + 7, {
+                           width: locationWidth - 20,
+                           align: 'center'
+                       });
+
+                    // Other maintenance details
+                    const infoY = locationBoxY + 40;
+                    const infoColWidth = (width / 3) - 20;
+
+                    // Site Details
+                    doc.font('Helvetica-Bold')
+                       .fontSize(10)
+                       .fillColor(colors.secondary)
+                       .text('Site Details:', detailsX, infoY);
+
+                    doc.font('Helvetica')
+                       .fontSize(10)
+                       .fillColor(colors.text)
+                       .text('Along Uganda Road', detailsX + 80, infoY, { width: infoColWidth });
+
+                    // Cargo Type
+                    const col2X = x + (width/3) + 25; // Increased offset to prevent overlap
+                    doc.font('Helvetica-Bold')
+                       .fontSize(10)
+                       .fillColor(colors.secondary)
+                       .text('Cargo Type:', col2X, infoY);
+
+                    doc.font('Helvetica')
+                       .fontSize(10)
+                       .fillColor(colors.text)
+                       .text('WET CARGO', col2X + 80, infoY, { width: infoColWidth });
+
+                    // Expected Duration with highlight
+                    const col3X = x + 2*(width/3) + 25; // Increased offset for better spacing
+                    doc.font('Helvetica-Bold')
+                       .fontSize(10)
+                       .fillColor(colors.secondary)
+                       .text('Duration:', col3X, infoY);
+
+                    // Draw duration highlight pill
+                    const durationText = `${data.duration || 24} hours`;
+                    const durationWidth = doc.widthOfString(durationText) + 20;
+                    const durationHeight = 20;
+
+                    doc.save()
+                       .roundedRect(col3X + 70, infoY - 2, durationWidth, durationHeight, 10)
+                       .fillAndStroke(data.duration === 48 ? '#ffecb3' : '#e3f2fd',
+                                     data.duration === 48 ? '#ffb300' : '#1976d2')
+                       .restore();
+
+                    doc.font('Helvetica-Bold')
+                       .fontSize(9)
+                       .fillColor(data.duration === 48 ? '#bf360c' : '#0d47a1')
+                       .text(durationText, col3X + 80, infoY + 2, {
+                           width: durationWidth - 20,
+                           align: 'center'
+                       });
+
+                    return endY;
+                });
+
+                currentY += 10;
+
+                // Contact information section
+                currentY = drawSection('Contact Information', currentY, (x, y, width) => {
+                    const boxHeight = 60;
+                    const endY = drawBox(x, y, width, boxHeight, {
+                        fillColor: '#fcfcff',
+                        strokeColor: colors.border
+                    });
+
+                    const detailsX = x + 15;
+                    const detailsY = y + 15;
+
+                    // Email with icon-like prefix
+                    doc.font('Helvetica-Bold')
+                       .fontSize(10)
+                       .fillColor(colors.secondary)
+                       .text('Email:', detailsX, detailsY);
+
+                    const emailText = data.email || 'N/A';
+
+                    // Draw email icon
+                    doc.save()
+                       .roundedRect(detailsX + 50, detailsY - 2, 20, 20, 3)
+                       .fillAndStroke('#e3f2fd', '#1976d2')
+                       .restore();
+
+                    doc.font('Helvetica-Bold')
+                       .fontSize(12)
+                       .fillColor('#0d47a1')
+                       .text('@', detailsX + 55, detailsY);
+
+                    // Email value
+                    doc.font('Helvetica')
+                       .fontSize(10)
+                       .fillColor('#0d47a1')
+                       .text(emailText, detailsX + 80, detailsY, { width: width - 100, underline: true });
+
+                    return endY;
+                });
+            } else {
+                // Content for Overnight/overstay Report
+                currentY = drawSection('Company Information', currentY, (x, y, width) => {
+                    const boxHeight = 70;
+                    const endY = drawBox(x, y, width, boxHeight, {
+                        fillColor: '#fcfcff',
+                        strokeColor: colors.border
+                    });
+
+                    const detailsX = x + 15;
+                    const detailsY = y + 15;
+
+                    doc.font('Helvetica-Bold')
+                       .fontSize(10)
+                       .fillColor(colors.secondary)
+                       .text(`Company: ${data.omc_name ? data.omc_name.toUpperCase() : 'N/A'}`, detailsX, detailsY);
+
+                    doc.font('Helvetica')
+                       .fontSize(10)
+                       .fillColor(colors.text)
+                       .text(`Report Type: ${reportType.toUpperCase()} Stay Request`, detailsX, detailsY + 15)
+                       .text(`Total Trucks: ${data.trucks.length}`, detailsX, detailsY + 30)
+                       .text(`Email: ${data.email}`, detailsX, detailsY + 45);
+
+                    return endY;
+                });
+
+                currentY += 10;
+
+                if (data.trucks && data.trucks.length > 0) {
+                    currentY = drawSection('Truck Details', currentY, (x, y, width) => {
+                        const boxHeight = Math.max(60, data.trucks.length * 15 + 30);
+                        const endY = drawBox(x, y, width, boxHeight, {
+                            fillColor: '#fcfcff',
+                            strokeColor: colors.border
+                        });
+
+                        const detailsX = x + 15;
+                        let lineY = y + 15;
+                        data.trucks.forEach((truck, index) => {
+                            doc.font('Helvetica')
+                               .fontSize(10)
+                               .fillColor(colors.text)
+                               .text(`${index + 1}. ${truck.reg_no} - ${truck.reason || 'N/A'}`, detailsX, lineY);
+                            lineY += 15;
+                        });
+
+                        return endY;
+                    });
+                }
+            }
+
+            // --- Draw Tanker Watermark (if fetched) ---
+            if (reportType === 'repair' && tankerImageBuffer) {
+                try {
+                    const tankerY = doc.page.height - doc.page.margins.bottom - 90;
+                    const tankerWidth = doc.page.width * 0.6; // Larger image
+                    const tankerX = (doc.page.width - tankerWidth) / 2;
+                    doc.save();
+                    doc.opacity(0.1); // More subtle
+                    doc.image(tankerImageBuffer, tankerX, tankerY, { width: tankerWidth, align: 'center' });
+                    console.log(`[PDF Debug] Tanker watermark drawn from buffer at y: ${tankerY}`);
+                    doc.restore();
+                } catch (tankerDrawError) {
+                    console.error("Error drawing tanker watermark from buffer:", tankerDrawError);
+                    await notifyAdmin(`*PDF Tanker Watermark Draw Error:*\nError: ${tankerDrawError.message || tankerDrawError}`);
+                }
+            } else if (reportType === 'repair' && TANKER_IMAGE_URL && !tankerImageBuffer) {
+                console.warn("[PDF Debug] Tanker watermark skipped due to previous fetch error.");
+            }
+
+            // --- Date info and QR code placement ---
+            if (qrCodeData) {
+                try {
+                    const qrX = doc.page.width - doc.page.margins.right - qrSize - 10;
+                    const qrY = currentY + 10;
+                    doc.image(qrCodeData, qrX, qrY, { fit: [qrSize, qrSize] });
+
+                    // Date under QR - ensure it doesn't overlap with other elements
+                    doc.fontSize(8)
+                       .font('Helvetica')
+                       .fillColor(colors.text)
+                       .text(`Generated: ${dateStr}`, qrX, qrY + qrSize + 8, {
+                           width: qrSize,
+                           align: 'center'
+                       });
+
+                    console.log(`[PDF Debug] QR drawn, new Y: ${qrY + qrSize + 8}`);
+                } catch (imageError) {
+                    console.error("Error drawing QR Code image:", imageError);
+                }
+            } else {
+                // If no QR code, still show date at top right
+                const dateTextWidth = doc.widthOfString(`Date: ${dateStr}`);
+                const dateX = doc.page.width - doc.page.margins.right - dateTextWidth;
+                doc.fontSize(9)
+                   .fillColor(colors.text)
+                   .text(`Date: ${dateStr}`, dateX, currentY + 15);
+            }
+
+            // --- Footer ---
+            doc.strokeColor(colors.light)
+               .lineWidth(1)
+               .moveTo(doc.page.margins.left, doc.page.height - doc.page.margins.bottom - 25)
+               .lineTo(doc.page.width - doc.page.margins.right, doc.page.height - doc.page.margins.bottom - 25)
+               .stroke();
+
+            // Footer text
+            doc.fontSize(8)
+               .font('Helvetica')
+               .fillColor('#777777')
+               .text('This is an automatically generated report. Please contact support if you have any questions.',
+                     doc.page.margins.left,
+                     doc.page.height - doc.page.margins.bottom - 20,
+                     { align: 'center', width: pageWidth });
+
+            doc.fontSize(7.5)
+               .fillColor('#AAAAAA')
+               .text(`Generated on ${dateTimeStr}`,
+                     doc.page.margins.left,
+                     doc.page.height - doc.page.margins.bottom - 10,
+                     { align: 'center', width: pageWidth });
+
+            console.log(`[PDF Gen End] Finalizing PDF generation with QR for type: ${reportType}`);
+            doc.end();
+        } catch (initError) {
+            clearTimeout(timeoutId);
+            console.error(`[PDF Gen Error - Initial] Type: ${reportType}, Error: ${initError.message}`);
+            reject(initError);
         }
-      }
-
-      // Company name and report title
-      const titleX = process.env.LOGO_IMAGE_URL ? doc.page.margins.left + 90 : doc.page.margins.left + 15;
-      doc.fontSize(18)
-         .fillColor(colors.primary)
-         .font('Helvetica-Bold')
-         .text(process.env.COMPANY_NAME || 'Company', titleX, currentY + 15);
-
-      doc.fontSize(14)
-         .fillColor(colors.secondary)
-         .text('TRUCK MAINTENANCE NOTIFICATION', titleX, currentY + 35);
-
-      // Registration highlight
-      doc.save()
-         .roundedRect(titleX, currentY + 55, 180, 20, 4)
-         .fillAndStroke('#e3f2fd', colors.secondary);
-      doc.fillColor(colors.secondary)
-         .fontSize(12)
-         .font('Helvetica-Bold')
-         .text(data.reg_no, titleX + 5, currentY + 58);
-      doc.restore();
-
-      currentY += 100;
-
-      // --- VEHICLE & DRIVER DETAILS ---
-      doc.fontSize(12)
-        .fillColor(colors.primary)
-        .font('Helvetica-Bold')
-        .text('Vehicle & Driver Details', 55, currentY);
-      currentY += 20;
-      doc.moveTo(55, currentY).lineTo(doc.page.width - 55, currentY).strokeColor(colors.primary).lineWidth(1).stroke();
-      currentY += 10;
-
-      doc.fontSize(10).fillColor(colors.secondary).font('Helvetica-Bold');
-      doc.text('Registration Number:', 55, currentY);
-      doc.text('Entry Number:', 55, currentY + 18);
-      doc.text("Driver's Name:", 300, currentY);
-      doc.text('Mobile Number:', 300, currentY + 18);
-
-      doc.font('Helvetica').fillColor(colors.text);
-      doc.text(data.reg_no || 'N/A', 170, currentY);
-      doc.text(data.entry_no || 'N/A', 170, currentY + 18);
-      doc.text(data.driver_name || 'N/A', 400, currentY);
-      doc.text(data.driver_no || 'N/A', 400, currentY + 18);
-
-      currentY += 40;
-
-      // --- MAINTENANCE INFORMATION ---
-      doc.fontSize(12)
-        .fillColor(colors.primary)
-        .font('Helvetica-Bold')
-        .text('Maintenance Information', 55, currentY);
-      currentY += 20;
-      doc.moveTo(55, currentY).lineTo(doc.page.width - 55, currentY).strokeColor(colors.primary).lineWidth(1).stroke();
-      currentY += 10;
-
-      doc.fontSize(10).fillColor(colors.secondary).font('Helvetica-Bold');
-      doc.text('Location:', 55, currentY);
-      doc.text('Site Details:', 55, currentY + 18);
-      doc.text('Cargo Type:', 300, currentY);
-      doc.text('Duration:', 300, currentY + 18);
-
-      doc.font('Helvetica').fillColor(colors.text);
-      doc.text(data.location || 'N/A', 120, currentY);
-      doc.text('Along Uganda Road', 120, currentY + 18);
-      doc.text('WET CARGO', 380, currentY);
-      doc.save()
-        .roundedRect(370, currentY + 18, 60, 16, 6)
-        .fillAndStroke(data.duration === 48 ? '#ffecb3' : '#e3f2fd', data.duration === 48 ? '#ffb300' : '#1976d2')
-        .restore();
-      doc.font('Helvetica-Bold')
-        .fontSize(9)
-        .fillColor(data.duration === 48 ? '#bf360c' : '#0d47a1')
-        .text(`${data.duration || 24} hours`, 380, currentY + 20);
-
-      currentY += 40;
-
-      // --- CONTACT INFORMATION ---
-      doc.fontSize(12)
-        .fillColor(colors.primary)
-        .font('Helvetica-Bold')
-        .text('Contact Information', 55, currentY);
-      currentY += 20;
-      doc.moveTo(55, currentY).lineTo(doc.page.width - 55, currentY).strokeColor(colors.primary).lineWidth(1).stroke();
-      currentY += 10;
-
-      doc.fontSize(10).fillColor(colors.secondary).font('Helvetica-Bold');
-      doc.text('Email:', 55, currentY);
-
-      doc.font('Helvetica').fillColor('#0d47a1');
-      doc.text(data.email || 'N/A', 110, currentY, { underline: true });
-
-      // === FOOTER ===
-      doc.fontSize(8)
-         .fillColor('#777777')
-         .text('This is an automatically generated report. Please contact support if you have any questions.',
-           55, doc.page.height - 60, { align: 'center', width: doc.page.width - 110 });
-      doc.fontSize(7.5)
-         .fillColor('#AAAAAA')
-         .text(`Generated on ${dateTimeStr}`,
-           55, doc.page.height - 45, { align: 'center', width: doc.page.width - 110 });
-
-      // === QR CODE Generation ===
-      let qrCodeData = null;
-      const qrCodeText = `REPAIR\nReg: ${data.reg_no}\nTeam: ${data.team || 'Eldoret'}\nLoc: ${data.location || 'N/A'}\nTime: ${dateTimeStr}`;
-      try {
-        qrCodeData = await qrcode.toBuffer(qrCodeText, {
-          errorCorrectionLevel: 'M',
-          type: 'png',
-          margin: 1,
-          scale: 4
-        });
-        console.log('QR Code generated successfully');
-      } catch (qrError) {
-        console.error("Error generating QR Code:", qrError);
-      }
-
-      // Place QR Code in top right corner
-      if (qrCodeData) {
-        const qrSize = 60;
-        const qrX = doc.page.width - doc.page.margins.right - qrSize - 10;
-        const qrY = doc.page.margins.top + 10;
-        doc.image(qrCodeData, qrX, qrY, { 
-          fit: [qrSize, qrSize],
-          align: 'right'
-        });
-
-        // Add "Scan for details" text under QR
-        doc.fontSize(8)
-           .fillColor('#666666')
-           .text('Scan for details', qrX, qrY + qrSize + 5, {
-             width: qrSize,
-             align: 'center'
-           });
-      }
-
-      doc.end();
-
-    } catch (err) {
-      reject(err);
-    }
-  });
+    }).finally(() => {
+        console.log(`[PDF Gen Finish] Promise resolved/rejected for Type: ${reportType}, ID: ${(reportType === 'repair' ? data.reg_no : data.omc_name) || 'N/A'}`);
+    });
 }
 
 async function notifyAdmin(msg) {
