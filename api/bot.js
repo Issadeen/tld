@@ -1,7 +1,7 @@
 // telegram-bot.js
 // Full Port of WhatsApp bot (wpp-bot.js) to Telegram using node-telegram-bot-api
 
-import TelegramBot from 'node-telegram-bot-api';
+import { Telegraf } from 'telegraf';
 import fetch from 'node-fetch';
 import PDFDocument from 'pdfkit';
 import nodemailer from 'nodemailer';
@@ -15,6 +15,8 @@ const SCRIPT_URL = process.env.SCRIPT_URL;
 const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
 const VERCEL_URL = process.env.VERCEL_URL; // e.g. https://your-app.vercel.app
+
+const bot = new Telegraf(TELEGRAM_TOKEN);
 
 // === Email Transport ===
 const transporter = nodemailer.createTransport({
@@ -55,160 +57,15 @@ async function notifyAdmin(msg) {
 
 // === MAIN HANDLER ===
 export default async function handler(request, response) {
-  try {
-    // Node.js API: request.headers is an object, not a Map
-    const host = request.headers['host'] || request.headers.host;
-    const protocol = host && host.startsWith('localhost') ? 'http' : 'https';
-    const absUrl = request.url.startsWith('http')
-      ? request.url
-      : `${protocol}://${host}${request.url}`;
-    const { pathname, searchParams } = new URL(absUrl);
-    const hasSetWebhookQuery =
-      searchParams.has('setwebhook') ||
-      pathname.endsWith('/setwebhook');
-
-    if (
-      request.method === 'GET' &&
-      (
-        pathname.startsWith('/setwebhook') ||
-        hasSetWebhookQuery
-      )
-    ) {
-      if (!VERCEL_URL) {
-        response.statusCode = 400;
-        response.setHeader('Content-Type', 'application/json');
-        response.end(JSON.stringify({ error: 'VERCEL_URL env var required' }));
-        return;
-      }
-      // Always use https for Telegram webhook
-      const webhookUrl = VERCEL_URL.startsWith('http') ? `${VERCEL_URL}/api/bot.js` : `https://${VERCEL_URL}/api/bot.js`;
-      const setWebhookRes = await fetch(
-        `https://api.telegram.org/bot${TELEGRAM_TOKEN}/setWebhook`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: webhookUrl }),
-        }
-      );
-      const data = await setWebhookRes.json();
-      response.statusCode = 200;
-      response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ setWebhook: data, webhookUrl }));
-      return;
+  if (request.method === 'POST') {
+    try {
+      await bot.handleUpdate(request.body, response);
+    } catch (err) {
+      console.error('Error handling update', err);
+      response.status(500).send('Error handling update');
     }
-
-    // Only accept POST requests from Telegram
-    if (request.method !== 'POST') {
-      response.statusCode = 200;
-      response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ status: 'ok', message: 'Send Telegram webhook updates via POST.' }));
-      return;
-    }
-
-    let body = '';
-    request.on('data', chunk => { body += chunk; });
-    request.on('end', async () => {
-      try {
-        body = body ? JSON.parse(body) : {};
-      } catch (e) {
-        response.statusCode = 400;
-        response.setHeader('Content-Type', 'application/json');
-        response.end(JSON.stringify({ error: 'Invalid JSON' }));
-        return;
-      }
-
-      // === Handle Telegram update ===
-      try {
-        const message = body.message;
-        if (!message || !message.text) {
-          response.statusCode = 200;
-          response.setHeader('Content-Type', 'application/json');
-          response.end(JSON.stringify({ status: 'ignored' }));
-          return;
-        }
-        const chatId = message.chat.id;
-        const text = message.text.trim();
-
-        // === Command Handlers ===
-        if (/^\/start/.test(text)) {
-          await sendMessage(chatId, 'Welcome to the Truck Bot 🚛\nUse /status <truckNo> or /row <rowNo>');
-        } else if (/^\/status (.+)/.test(text)) {
-          const truck = text.match(/^\/status (.+)/)[1];
-          try {
-            const url = `${SCRIPT_URL}?action=getTruckStatus&sheet=TRANSIT&query=${encodeURIComponent(truck)}`;
-            const res2 = await fetch(url);
-            const json = await res2.json();
-            if (!json.success) throw new Error(json.message);
-
-            const details = json.data[0];
-            let reply = `🚚 *Truck Info for ${truck}*\n`;
-            for (let [k, v] of Object.entries(details)) {
-              reply += `\n*${k}*: ${v}`;
-            }
-            await sendMessage(chatId, reply, 'Markdown');
-          } catch (err) {
-            await sendMessage(chatId, `❌ Error: ${err.message}`);
-            await notifyAdmin(`Error fetching status for ${truck}: ${err.message}`);
-          }
-        } else if (/^\/row (\d+)/.test(text)) {
-          const row = parseInt(text.match(/^\/row (\d+)/)[1]);
-          try {
-            const url = `${SCRIPT_URL}?action=getRowDetails&sheet=TRANSIT&query=${row}`;
-            const res2 = await fetch(url);
-            const json = await res2.json();
-            if (!json.success) throw new Error(json.message);
-
-            const details = json.data[0];
-            const pdfBuffer = await generatePDF(details);
-
-            // Send PDF as document
-            await sendDocument(chatId, pdfBuffer, `Row${row}-Report.pdf`);
-          } catch (err) {
-            await sendMessage(chatId, `⚠️ PDF Generation Failed: ${err.message}`);
-            await notifyAdmin(`Error fetching row ${row}: ${err.message}`);
-          }
-        } else if (/^\/report (.+)/.test(text)) {
-          const truck = text.match(/^\/report (.+)/)[1];
-          try {
-            const url = `${SCRIPT_URL}?action=getTruckStatus&sheet=TRANSIT&query=${encodeURIComponent(truck)}`;
-            const res2 = await fetch(url);
-            const json = await res2.json();
-            if (!json.success) throw new Error(json.message);
-
-            const details = json.data[0];
-            const pdfBuffer = await generatePDF(details);
-
-            await transporter.sendMail({
-              from: SMTP_USER,
-              to: 'recipient@example.com',
-              subject: `Repair Report - ${truck}`,
-              text: 'Attached is the repair report.',
-              attachments: [{ filename: `${truck}.pdf`, content: pdfBuffer }],
-            });
-
-            await sendMessage(chatId, `📧 Email sent with report for *${truck}*`, 'Markdown');
-          } catch (err) {
-            await sendMessage(chatId, `❌ Email Failed: ${err.message}`);
-            await notifyAdmin(`Error emailing report for ${truck}: ${err.message}`);
-          }
-        } else {
-          await sendMessage(chatId, `❓ Unknown input. Use /status <truck> or /row <rowNo>`);
-        }
-
-        response.statusCode = 200;
-        response.setHeader('Content-Type', 'application/json');
-        response.end(JSON.stringify({ status: 'ok' }));
-      } catch (err) {
-        response.statusCode = 500;
-        response.setHeader('Content-Type', 'application/json');
-        response.end(JSON.stringify({ error: err.message }));
-      }
-    });
-  } catch (err) {
-    // Always respond, never leave the request hanging (prevents 401)
-    response.statusCode = 500;
-    response.setHeader('Content-Type', 'application/json');
-    response.end(JSON.stringify({ error: err.message }));
+  } else {
+    response.status(200).send('OK');
   }
 }
 
@@ -240,3 +97,97 @@ async function sendDocument(chatId, buffer, filename) {
     headers: form.getHeaders(),
   });
 }
+
+// Define your bot commands here
+bot.command('start', (ctx) => ctx.reply('Welcome to the Telegram bot!'));
+bot.command('ping', (ctx) => ctx.reply('🏓 Pong!'));
+bot.on('text', (ctx) => ctx.reply(`Echo: ${ctx.message.text}`));
+
+// Handle webhook updates
+bot.telegram.setWebhook(`${VERCEL_URL}/api/bot`);
+
+// Register command handlers
+bot.command('status', async (ctx) => {
+  const args = ctx.message.text.split(' ');
+  if (args.length < 2) {
+    return ctx.reply('Please provide a truck number: /status <truckNo>');
+  }
+  
+  const truck = args.slice(1).join(' ');
+  try {
+    const url = `${SCRIPT_URL}?action=getTruckStatus&sheet=TRANSIT&query=${encodeURIComponent(truck)}`;
+    const res = await fetch(url);
+    const json = await res.json();
+    if (!json.success) throw new Error(json.message);
+
+    const details = json.data[0];
+    let reply = `🚚 *Truck Info for ${truck}*\n`;
+    for (let [k, v] of Object.entries(details)) {
+      reply += `\n*${k}*: ${v}`;
+    }
+    await ctx.replyWithMarkdown(reply);
+  } catch (err) {
+    await ctx.reply(`❌ Error: ${err.message}`);
+    await notifyAdmin(`Error fetching status for ${truck}: ${err.message}`);
+  }
+});
+
+bot.command('row', async (ctx) => {
+  const args = ctx.message.text.split(' ');
+  if (args.length < 2 || isNaN(parseInt(args[1]))) {
+    return ctx.reply('Please provide a row number: /row <rowNo>');
+  }
+  
+  const row = parseInt(args[1]);
+  try {
+    const url = `${SCRIPT_URL}?action=getRowDetails&sheet=TRANSIT&query=${row}`;
+    const res = await fetch(url);
+    const json = await res.json();
+    if (!json.success) throw new Error(json.message);
+
+    const details = json.data[0];
+    const pdfBuffer = await generatePDF(details);
+
+    // Send PDF as document
+    await ctx.replyWithDocument({ source: pdfBuffer, filename: `Row${row}-Report.pdf` });
+  } catch (err) {
+    await ctx.reply(`⚠️ PDF Generation Failed: ${err.message}`);
+    await notifyAdmin(`Error fetching row ${row}: ${err.message}`);
+  }
+});
+
+bot.command('report', async (ctx) => {
+  const args = ctx.message.text.split(' ');
+  if (args.length < 2) {
+    return ctx.reply('Please provide a truck number: /report <truckNo>');
+  }
+  
+  const truck = args.slice(1).join(' ');
+  try {
+    const url = `${SCRIPT_URL}?action=getTruckStatus&sheet=TRANSIT&query=${encodeURIComponent(truck)}`;
+    const res = await fetch(url);
+    const json = await res.json();
+    if (!json.success) throw new Error(json.message);
+
+    const details = json.data[0];
+    const pdfBuffer = await generatePDF(details);
+
+    await transporter.sendMail({
+      from: SMTP_USER,
+      to: 'recipient@example.com',
+      subject: `Repair Report - ${truck}`,
+      text: 'Attached is the repair report.',
+      attachments: [{ filename: `${truck}.pdf`, content: pdfBuffer }],
+    });
+
+    await ctx.replyWithMarkdown(`📧 Email sent with report for *${truck}*`);
+  } catch (err) {
+    await ctx.reply(`❌ Email Failed: ${err.message}`);
+    await notifyAdmin(`Error emailing report for ${truck}: ${err.message}`);
+  }
+});
+
+// Handle unknown commands or messages
+bot.on('text', (ctx) => {
+  ctx.reply(`❓ Unknown input. Use /status <truck> or /row <rowNo>`);
+});
