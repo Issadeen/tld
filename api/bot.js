@@ -17,6 +17,12 @@ const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
 const VERCEL_URL = process.env.VERCEL_URL;
 
+// Add these missing environment variables
+const TANKER_IMAGE_URL = process.env.TANKER_IMAGE_URL;
+const LOGO_IMAGE_URL = process.env.LOGO_IMAGE_URL;
+const COMPANY_NAME = process.env.COMPANY_NAME || "IA";
+const DEFAULT_RECIPIENTS = (process.env.DEFAULT_RECIPIENTS || '').split(',').map(e => e.trim()).filter(e => e);
+
 const bot = new Telegraf(TELEGRAM_TOKEN);
 
 // === Email Transport ===
@@ -850,7 +856,7 @@ bot.on('text', async (ctx) => {
     }
     // Check for email in any line
     else if (/@/.test(line) && !emailFound) {
-            const match = line.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-ZaZ]{2,}/);
+            const match = line.match(/[A-Za-z0-9._%+-]+@[A-ZaZ0-9.-]+\.[A-Za-z]{2,}/);
             if (match) {
               data.email = match[0];
               emailFound = true;
