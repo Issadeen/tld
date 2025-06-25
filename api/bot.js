@@ -55,8 +55,13 @@ async function notifyAdmin(msg) {
 
 // === MAIN HANDLER ===
 export default async function handler(request) {
-  // Parse URL and query for robust /setwebhook detection
-  const { pathname, searchParams } = new URL(request.url);
+  // Build absolute URL for parsing
+  const host = request.headers.get('host');
+  const protocol = host && host.startsWith('localhost') ? 'http' : 'https';
+  const absUrl = request.url.startsWith('http')
+    ? request.url
+    : `${protocol}://${host}${request.url}`;
+  const { pathname, searchParams } = new URL(absUrl);
   const hasSetWebhookQuery =
     searchParams.has('setwebhook') ||
     pathname.endsWith('/setwebhook');
