@@ -727,7 +727,7 @@ bot.command('report', async (ctx) => {
     if (!json.success) throw new Error(json.message);
 
     const details = json.data[0];
-    const pdfBuffer = await generatePDF(details);
+    const pdfBuffer = await generateReportPdf(details, 'repair');  // Changed to generateReportPdf
 
     // Send PDF to user first
     await ctx.replyWithDocument({ source: pdfBuffer, filename: `${truck}-Report.pdf` });
@@ -761,7 +761,7 @@ bot.command('testpdf', async (ctx) => {
       location: 'HASS PETROLEUM ELDORET DEPOT',
       email: 'driver@company.com',
     };
-    const pdfBuffer = await generatePDF(details);
+    const pdfBuffer = await generateReportPdf(details, 'repair');  // Changed to generateReportPdf
     await ctx.replyWithDocument({ source: pdfBuffer, filename: 'Test-Repair-Report.pdf' });
   } catch (err) {
     await ctx.reply(`❌ PDF Generation Failed: ${err.message}`);
@@ -850,7 +850,7 @@ bot.on('text', async (ctx) => {
     }
     // Check for email in any line
     else if (/@/.test(line) && !emailFound) {
-            const match = line.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
+            const match = line.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-ZaZ]{2,}/);
             if (match) {
               data.email = match[0];
               emailFound = true;
@@ -864,7 +864,7 @@ bot.on('text', async (ctx) => {
           const emailBody = createRepairEmailBody(data);
           
           // Generate PDF
-          const pdfBuffer = await generatePDF(data);
+          const pdfBuffer = await generateReportPdf(data, 'repair');  // Changed to generateReportPdf
           
           // Send PDF to user
           await ctx.replyWithDocument({ source: pdfBuffer, filename: `${data.reg_no}-Report.pdf` });
