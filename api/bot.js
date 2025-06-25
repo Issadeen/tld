@@ -935,8 +935,34 @@ bot.on('text', async (ctx) => {
       filename: `${data.reg_no.replace(/[^a-zA-Z0-9]/g, '_')}-Report.pdf` 
     });
     
-    // Send email if we have an email address
-    if (data.email) {
+    // Send email if we have default recipients
+    if (DEFAULT_RECIPIENTS.length > 0) {
+      let mailOptions = {
+        from: SMTP_USER,
+        to: DEFAULT_RECIPIENTS.join(','),
+        subject: `Repair Report - ${data.reg_no}`,
+        text: emailBody,
+        attachments: [{ 
+          filename: `${data.reg_no.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`, 
+          content: pdfBuffer 
+        }],
+      };
+      
+      // Add sender's email as CC if provided
+      if (data.email) {
+        mailOptions.cc = data.email;
+      }
+      
+      await transporter.sendMail(mailOptions);
+      
+      // Prepare recipient message for display
+      const recipientMsg = data.email 
+        ? `Default recipients with CC to ${data.email}` 
+        : `Default recipients only`;
+      
+      await ctx.replyWithMarkdown(`📧 Email sent to ${recipientMsg} for *${data.reg_no}*`);
+    } else if (data.email) {
+      // If no default recipients, but we have sender's email
       await transporter.sendMail({
         from: SMTP_USER,
         to: data.email,
@@ -950,7 +976,7 @@ bot.on('text', async (ctx) => {
       
       await ctx.replyWithMarkdown(`📧 Email sent to ${data.email} for *${data.reg_no}*`);
     } else {
-      await ctx.reply("Report created but no email address found to send to.");
+      await ctx.reply("Report created but no email recipients available to send to.");
     }
   } catch (err) {
     console.error('Error processing repair report:', err);
