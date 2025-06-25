@@ -54,30 +54,27 @@ async function notifyAdmin(msg) {
 }
 
 // === MAIN HANDLER ===
-export default async function handler(req, res) {
+export default async function handler(request) {
   // Parse URL and query for robust /setwebhook detection
-  const url = req.url || '';
+  const { pathname, searchParams } = new URL(request.url);
   const hasSetWebhookQuery =
-    (req.query && req.query.setwebhook !== undefined) ||
-    url.includes('?setwebhook') ||
-    url.includes('&setwebhook') ||
-    url.endsWith('/setwebhook');
+    searchParams.has('setwebhook') ||
+    pathname.endsWith('/setwebhook');
 
   if (
-    req.method === 'GET' &&
+    request.method === 'GET' &&
     (
-      (url && url.startsWith('/setwebhook')) ||
+      pathname.startsWith('/setwebhook') ||
       hasSetWebhookQuery
     )
   ) {
     if (!VERCEL_URL) {
-      res.status(400).json({ error: 'VERCEL_URL env var required' });
-      return;
+      return new Response(JSON.stringify({ error: 'VERCEL_URL env var required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
     const webhookUrl = `${VERCEL_URL}/api/bot.js`;
-    // Log the webhook URL for debugging
-    console.log('Setting Telegram webhook to:', webhookUrl);
-
     const setWebhookRes = await fetch(
       `https://api.telegram.org/bot${TELEGRAM_TOKEN}/setWebhook`,
       {
@@ -87,40 +84,38 @@ export default async function handler(req, res) {
       }
     );
     const data = await setWebhookRes.json();
-    // Log Telegram's response for debugging
-    console.log('Telegram setWebhook response:', data);
-
-    res.status(200).json({ setWebhook: data, webhookUrl });
-    return;
+    return new Response(JSON.stringify({ setWebhook: data, webhookUrl }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 
   // Only accept POST requests from Telegram
-  if (req.method !== 'POST') {
-    res.status(200).json({ status: 'ok', message: 'Send Telegram webhook updates via POST.' });
-    return;
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ status: 'ok', message: 'Send Telegram webhook updates via POST.' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 
-  let body = req.body;
-  // Vercel may not parse JSON automatically
-  if (!body) {
-    try {
-      body = JSON.parse(await new Promise((resolve, reject) => {
-        let data = '';
-        req.on('data', chunk => (data += chunk));
-        req.on('end', () => resolve(data));
-      }));
-    } catch (e) {
-      res.status(400).json({ error: 'Invalid JSON' });
-      return;
-    }
+  let body;
+  try {
+    body = await request.json();
+  } catch (e) {
+    return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 
   // === Handle Telegram update ===
   try {
     const message = body.message;
     if (!message || !message.text) {
-      res.status(200).json({ status: 'ignored' });
-      return;
+      return new Response(JSON.stringify({ status: 'ignored' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
     const chatId = message.chat.id;
     const text = message.text.trim();
@@ -191,9 +186,15 @@ export default async function handler(req, res) {
       await sendMessage(chatId, `❓ Unknown input. Use /status <truck> or /row <rowNo>`);
     }
 
-    res.status(200).json({ status: 'ok' });
+    return new Response(JSON.stringify({ status: 'ok' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return new Response(JSON.stringify({ error: err.message }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 }
 
