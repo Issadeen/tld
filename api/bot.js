@@ -6,6 +6,7 @@ import fetch from 'node-fetch';
 import PDFDocument from 'pdfkit';
 import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
+import qrcode from 'qrcode';  // Add this import at the top
 dotenv.config();
 
 // === CONFIG ===
@@ -28,128 +29,232 @@ const transporter = nodemailer.createTransport({
 });
 
 // === HELPERS ===
+function getNairobiTimeString(type = 'date') {
+  const now = new Date();
+  const options = { timeZone: 'Africa/Nairobi' };
+  if (type === 'datetime') {
+    options.year = 'numeric';
+    options.month = '2-digit';
+    options.day = '2-digit';
+    options.hour = '2-digit';
+    options.minute = '2-digit';
+    options.second = '2-digit';
+    options.hour12 = false;
+    return now.toLocaleString('en-GB', options);
+  } else {
+    options.year = 'numeric';
+    options.month = 'long';
+    options.day = 'numeric';
+    return now.toLocaleDateString('en-GB', options);
+  }
+}
+
+function createRepairEmailBody(data) {
+  const entryInfo = data.entry_no ? `\n• Entry Number: ${data.entry_no}` : "";
+  const dateStr = new Date().toLocaleDateString('en-GB', { timeZone: 'Africa/Nairobi' });
+  return `Date: ${dateStr}\n\nDear RRU Team ${data.team || 'Eldoret'},\n\nTRUCK MAINTENANCE NOTIFICATION - ${data.reg_no}\n\nThe truck below has developed a mechanical problem and will be undergoing repairs.\n\nVehicle & Driver Details:\n----------------------\n• Registration Number: ${data.reg_no}${entryInfo}\n• Driver's Name: ${data.driver_name}\n• Mobile Number: ${data.driver_no}\n\nMaintenance Information:\n---------------------\n• Location: ${data.location}\n• Site Details: Along Uganda Road\n• Cargo Type: WET CARGO\n• Expected Duration: ${data.duration || 24} hours\n\nThank you for your attention to this matter.`;
+}
+
 function generatePDF(data, filename = 'report.pdf') {
-  return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ margin: 40, size: 'A4' });
-    const chunks = [];
-    doc.on('data', (chunk) => chunks.push(chunk));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
+  return new Promise(async (resolve, reject) => {
+    try {
+      const doc = new PDFDocument({ margin: 40, size: 'A4', bufferPages: true, autoFirstPage: false });
+      doc.addPage();
+      const chunks = [];
+      const dateStr = getNairobiTimeString();
+      const dateTimeStr = getNairobiTimeString('datetime');
 
-    // --- COLORS ---
-    const colors = {
-      primary: '#1a237e',
-      secondary: '#303f9f',
-      text: '#424242',
-      light: '#e3f2fd',
-      accent: '#ff9800',
-      background: '#f9f9f9',
-      border: '#9fa8da'
-    };
+      doc.on('data', chunk => chunks.push(chunk));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
 
-    // --- HEADER ---
-    doc.rect(40, 40, doc.page.width - 80, 60)
-      .fillAndStroke('#f5f5ff', colors.primary)
-      .stroke();
-    doc.fontSize(18)
-      .fillColor(colors.primary)
-      .font('Helvetica-Bold')
-      .text(process.env.COMPANY_NAME || 'Company', 55, 55);
-    doc.fontSize(13)
-      .fillColor(colors.secondary)
-      .font('Helvetica-Bold')
-      .text('TRUCK MAINTENANCE NOTIFICATION', 55, 80);
+      // === COLORS ===
+      const colors = {
+        primary: '#1a237e',
+        secondary: '#303f9f',
+        text: '#424242',
+        light: '#e3f2fd',
+        accent: '#ff9800',
+        background: '#f9f9f9',
+        border: '#9fa8da'
+      };
 
-    // Registration highlight
-    doc.save()
-      .roundedRect(55, 105, 200, 22, 4)
-      .fillAndStroke('#e3f2fd', colors.secondary)
-      .restore();
-    doc.fontSize(12)
-      .fillColor(colors.secondary)
-      .font('Helvetica-Bold')
-      .text(data.reg_no || 'N/A', 60, 110);
+      // === Add text watermark ===
+      try {
+        doc.save();
+        const centerX = doc.page.width / 2;
+        const centerY = doc.page.height / 2;
+        doc.fillColor('#f0f0f0')
+           .fontSize(78)
+           .opacity(0.13)
+           .rotate(-40, { origin: [centerX, centerY] })
+           .text('URGENT REPAIR', 0, centerY, { align: 'center', width: doc.page.width });
+        doc.restore();
+      } catch (e) {
+        console.error("Error drawing watermark:", e);
+      }
 
-    let y = 140;
+      // === HEADER ===
+      let currentY = doc.page.margins.top;
+      const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
 
-    // --- VEHICLE & DRIVER DETAILS ---
-    doc.fontSize(12)
-      .fillColor(colors.primary)
-      .font('Helvetica-Bold')
-      .text('Vehicle & Driver Details', 55, y);
-    y += 20;
-    doc.moveTo(55, y).lineTo(doc.page.width - 55, y).strokeColor(colors.primary).lineWidth(1).stroke();
-    y += 10;
+      // Header box
+      doc.rect(doc.page.margins.left, currentY, pageWidth, 80)
+         .fillAndStroke('#f5f5ff', colors.primary)
+         .stroke();
 
-    doc.fontSize(10).fillColor(colors.secondary).font('Helvetica-Bold');
-    doc.text('Registration Number:', 55, y);
-    doc.text('Entry Number:', 55, y + 18);
-    doc.text("Driver's Name:", 300, y);
-    doc.text('Mobile Number:', 300, y + 18);
+      // Logo placement (if available)
+      if (process.env.LOGO_IMAGE_URL) {
+        try {
+          const logoSize = 60;
+          doc.image(process.env.LOGO_IMAGE_URL, doc.page.margins.left + 15, currentY + 10, {
+            fit: [logoSize, logoSize],
+            align: 'left'
+          });
+        } catch (logoErr) {
+          console.error("Error placing logo in PDF:", logoErr);
+        }
+      }
 
-    doc.font('Helvetica').fillColor(colors.text);
-    doc.text(data.reg_no || 'N/A', 170, y);
-    doc.text(data.entry_no || 'N/A', 170, y + 18);
-    doc.text(data.driver_name || 'N/A', 400, y);
-    doc.text(data.driver_no || 'N/A', 400, y + 18);
+      // Company name and report title
+      const titleX = process.env.LOGO_IMAGE_URL ? doc.page.margins.left + 90 : doc.page.margins.left + 15;
+      doc.fontSize(18)
+         .fillColor(colors.primary)
+         .font('Helvetica-Bold')
+         .text(process.env.COMPANY_NAME || 'Company', titleX, currentY + 15);
 
-    y += 40;
+      doc.fontSize(14)
+         .fillColor(colors.secondary)
+         .text('TRUCK MAINTENANCE NOTIFICATION', titleX, currentY + 35);
 
-    // --- MAINTENANCE INFORMATION ---
-    doc.fontSize(12)
-      .fillColor(colors.primary)
-      .font('Helvetica-Bold')
-      .text('Maintenance Information', 55, y);
-    y += 20;
-    doc.moveTo(55, y).lineTo(doc.page.width - 55, y).strokeColor(colors.primary).lineWidth(1).stroke();
-    y += 10;
+      // Registration highlight
+      doc.save()
+         .roundedRect(titleX, currentY + 55, 180, 20, 4)
+         .fillAndStroke('#e3f2fd', colors.secondary);
+      doc.fillColor(colors.secondary)
+         .fontSize(12)
+         .font('Helvetica-Bold')
+         .text(data.reg_no, titleX + 5, currentY + 58);
+      doc.restore();
 
-    doc.fontSize(10).fillColor(colors.secondary).font('Helvetica-Bold');
-    doc.text('Location:', 55, y);
-    doc.text('Site Details:', 55, y + 18);
-    doc.text('Cargo Type:', 300, y);
-    doc.text('Duration:', 300, y + 18);
+      currentY += 100;
 
-    doc.font('Helvetica').fillColor(colors.text);
-    doc.text(data.location || 'N/A', 120, y);
-    doc.text('Along Uganda Road', 120, y + 18);
-    doc.text('WET CARGO', 380, y);
-    doc.save()
-      .roundedRect(370, y + 18, 60, 16, 6)
-      .fillAndStroke(data.duration === 48 ? '#ffecb3' : '#e3f2fd', data.duration === 48 ? '#ffb300' : '#1976d2')
-      .restore();
-    doc.font('Helvetica-Bold')
-      .fontSize(9)
-      .fillColor(data.duration === 48 ? '#bf360c' : '#0d47a1')
-      .text(`${data.duration || 24} hours`, 380, y + 20);
+      // --- VEHICLE & DRIVER DETAILS ---
+      doc.fontSize(12)
+        .fillColor(colors.primary)
+        .font('Helvetica-Bold')
+        .text('Vehicle & Driver Details', 55, currentY);
+      currentY += 20;
+      doc.moveTo(55, currentY).lineTo(doc.page.width - 55, currentY).strokeColor(colors.primary).lineWidth(1).stroke();
+      currentY += 10;
 
-    y += 40;
+      doc.fontSize(10).fillColor(colors.secondary).font('Helvetica-Bold');
+      doc.text('Registration Number:', 55, currentY);
+      doc.text('Entry Number:', 55, currentY + 18);
+      doc.text("Driver's Name:", 300, currentY);
+      doc.text('Mobile Number:', 300, currentY + 18);
 
-    // --- CONTACT INFORMATION ---
-    doc.fontSize(12)
-      .fillColor(colors.primary)
-      .font('Helvetica-Bold')
-      .text('Contact Information', 55, y);
-    y += 20;
-    doc.moveTo(55, y).lineTo(doc.page.width - 55, y).strokeColor(colors.primary).lineWidth(1).stroke();
-    y += 10;
+      doc.font('Helvetica').fillColor(colors.text);
+      doc.text(data.reg_no || 'N/A', 170, currentY);
+      doc.text(data.entry_no || 'N/A', 170, currentY + 18);
+      doc.text(data.driver_name || 'N/A', 400, currentY);
+      doc.text(data.driver_no || 'N/A', 400, currentY + 18);
 
-    doc.fontSize(10).fillColor(colors.secondary).font('Helvetica-Bold');
-    doc.text('Email:', 55, y);
+      currentY += 40;
 
-    doc.font('Helvetica').fillColor('#0d47a1');
-    doc.text(data.email || 'N/A', 110, y, { underline: true });
+      // --- MAINTENANCE INFORMATION ---
+      doc.fontSize(12)
+        .fillColor(colors.primary)
+        .font('Helvetica-Bold')
+        .text('Maintenance Information', 55, currentY);
+      currentY += 20;
+      doc.moveTo(55, currentY).lineTo(doc.page.width - 55, currentY).strokeColor(colors.primary).lineWidth(1).stroke();
+      currentY += 10;
 
-    // --- FOOTER ---
-    doc.fontSize(8)
-      .fillColor('#777777')
-      .text('This is an automatically generated report. Please contact support if you have any questions.',
-        55, doc.page.height - 60, { align: 'center', width: doc.page.width - 110 });
-    doc.fontSize(7.5)
-      .fillColor('#AAAAAA')
-      .text(`Generated on ${new Date().toLocaleString('en-GB', { timeZone: 'Africa/Nairobi' })}`,
-        55, doc.page.height - 45, { align: 'center', width: doc.page.width - 110 });
+      doc.fontSize(10).fillColor(colors.secondary).font('Helvetica-Bold');
+      doc.text('Location:', 55, currentY);
+      doc.text('Site Details:', 55, currentY + 18);
+      doc.text('Cargo Type:', 300, currentY);
+      doc.text('Duration:', 300, currentY + 18);
 
-    doc.end();
+      doc.font('Helvetica').fillColor(colors.text);
+      doc.text(data.location || 'N/A', 120, currentY);
+      doc.text('Along Uganda Road', 120, currentY + 18);
+      doc.text('WET CARGO', 380, currentY);
+      doc.save()
+        .roundedRect(370, currentY + 18, 60, 16, 6)
+        .fillAndStroke(data.duration === 48 ? '#ffecb3' : '#e3f2fd', data.duration === 48 ? '#ffb300' : '#1976d2')
+        .restore();
+      doc.font('Helvetica-Bold')
+        .fontSize(9)
+        .fillColor(data.duration === 48 ? '#bf360c' : '#0d47a1')
+        .text(`${data.duration || 24} hours`, 380, currentY + 20);
+
+      currentY += 40;
+
+      // --- CONTACT INFORMATION ---
+      doc.fontSize(12)
+        .fillColor(colors.primary)
+        .font('Helvetica-Bold')
+        .text('Contact Information', 55, currentY);
+      currentY += 20;
+      doc.moveTo(55, currentY).lineTo(doc.page.width - 55, currentY).strokeColor(colors.primary).lineWidth(1).stroke();
+      currentY += 10;
+
+      doc.fontSize(10).fillColor(colors.secondary).font('Helvetica-Bold');
+      doc.text('Email:', 55, currentY);
+
+      doc.font('Helvetica').fillColor('#0d47a1');
+      doc.text(data.email || 'N/A', 110, currentY, { underline: true });
+
+      // === FOOTER ===
+      doc.fontSize(8)
+         .fillColor('#777777')
+         .text('This is an automatically generated report. Please contact support if you have any questions.',
+           55, doc.page.height - 60, { align: 'center', width: doc.page.width - 110 });
+      doc.fontSize(7.5)
+         .fillColor('#AAAAAA')
+         .text(`Generated on ${dateTimeStr}`,
+           55, doc.page.height - 45, { align: 'center', width: doc.page.width - 110 });
+
+      // === QR CODE Generation ===
+      let qrCodeData = null;
+      const qrCodeText = `REPAIR\nReg: ${data.reg_no}\nTeam: ${data.team || 'Eldoret'}\nLoc: ${data.location || 'N/A'}\nTime: ${dateTimeStr}`;
+      try {
+        qrCodeData = await qrcode.toBuffer(qrCodeText, {
+          errorCorrectionLevel: 'M',
+          type: 'png',
+          margin: 1,
+          scale: 4
+        });
+        console.log('QR Code generated successfully');
+      } catch (qrError) {
+        console.error("Error generating QR Code:", qrError);
+      }
+
+      // Place QR Code in top right corner
+      if (qrCodeData) {
+        const qrSize = 60;
+        const qrX = doc.page.width - doc.page.margins.right - qrSize - 10;
+        const qrY = doc.page.margins.top + 10;
+        doc.image(qrCodeData, qrX, qrY, { 
+          fit: [qrSize, qrSize],
+          align: 'right'
+        });
+
+        // Add "Scan for details" text under QR
+        doc.fontSize(8)
+           .fillColor('#666666')
+           .text('Scan for details', qrX, qrY + qrSize + 5, {
+             width: qrSize,
+             align: 'center'
+           });
+      }
+
+      doc.end();
+
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 
@@ -385,30 +490,54 @@ bot.on('text', async (ctx) => {
     }
     // Check for email in any line
     else if (/@/.test(line) && !emailFound) {
-      const match = line.match(/[A-Za-z0-9._%+-]+@[A-ZaZ0-9.-]+\.[A-Za-z]{2,}/);
-      if (match) {
-        data.email = match[0];
-        emailFound = true;
-      }
-    }
-  }
-
-  // For testing: echo the parsed data
-  ctx.reply(`Parsed data:\n\`\`\`${JSON.stringify(data, null, 2)}\n\`\`\``);
-});
-
-// === Vercel Webhook Handler ===
-const handler = async (req, res) => {
-  if (req.method === 'POST') {
-    try {
-      await bot.handleUpdate(req.body, res);
-    } catch (err) {
-      console.error('Error handling update', err);
-      res.status(500).send('Error handling update');
-    }
-  } else {
-    res.status(200).send('OK');
-  }
-};
-
-export default handler;
+            const match = line.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
+            if (match) {
+              data.email = match[0];
+              emailFound = true;
+            }
+          }
+        }
+        
+        // Continue with processing the repair report
+        try {
+          // Generate email body
+          const emailBody = createRepairEmailBody(data);
+          
+          // Generate PDF
+          const pdfBuffer = await generatePDF(data);
+          
+          // Send PDF to user
+          await ctx.replyWithDocument({ source: pdfBuffer, filename: `${data.reg_no}-Report.pdf` });
+          
+          // Send email if we have an email address
+          if (data.email) {
+            await transporter.sendMail({
+              from: SMTP_USER,
+              to: data.email,
+              subject: `Repair Report - ${data.reg_no}`,
+              text: emailBody,
+              attachments: [{ filename: `${data.reg_no}.pdf`, content: pdfBuffer }],
+            });
+            
+            await ctx.replyWithMarkdown(`📧 Email sent to ${data.email} for *${data.reg_no}*`);
+          } else {
+            await ctx.reply("Report created but no email address found to send to.");
+          }
+        } catch (err) {
+          await ctx.reply(`❌ Report Generation Failed: ${err.message}`);
+          await notifyAdmin(`Error creating repair report: ${err.message}`);
+        }
+      });
+      
+      // Launch bot
+      bot.launch().then(() => {
+        console.log('Bot started successfully');
+      }).catch(err => {
+        console.error('Error starting bot:', err);
+      });
+      
+      // Enable graceful stop
+      process.once('SIGINT', () => bot.stop('SIGINT'));
+      process.once('SIGTERM', () => bot.stop('SIGTERM'));
+      
+      export default bot;
