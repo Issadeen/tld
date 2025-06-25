@@ -55,12 +55,13 @@ async function notifyAdmin(msg) {
 
 // === MAIN HANDLER ===
 export default async function handler(req, res) {
-  // Support both /setwebhook path and ?setwebhook query
+  // Parse URL and query for robust /setwebhook detection
   const url = req.url || '';
   const hasSetWebhookQuery =
     (req.query && req.query.setwebhook !== undefined) ||
     url.includes('?setwebhook') ||
-    url.includes('&setwebhook');
+    url.includes('&setwebhook') ||
+    url.endsWith('/setwebhook');
 
   if (
     req.method === 'GET' &&
@@ -74,6 +75,9 @@ export default async function handler(req, res) {
       return;
     }
     const webhookUrl = `${VERCEL_URL}/api/bot.js`;
+    // Log the webhook URL for debugging
+    console.log('Setting Telegram webhook to:', webhookUrl);
+
     const setWebhookRes = await fetch(
       `https://api.telegram.org/bot${TELEGRAM_TOKEN}/setWebhook`,
       {
@@ -83,6 +87,9 @@ export default async function handler(req, res) {
       }
     );
     const data = await setWebhookRes.json();
+    // Log Telegram's response for debugging
+    console.log('Telegram setWebhook response:', data);
+
     res.status(200).json({ setWebhook: data, webhookUrl });
     return;
   }
