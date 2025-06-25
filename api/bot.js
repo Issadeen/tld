@@ -4,136 +4,205 @@
 import TelegramBot from 'node-telegram-bot-api';
 import fetch from 'node-fetch';
 import PDFDocument from 'pdfkit';
-import fs from 'fs';
 import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
 dotenv.config();
 
 // === CONFIG ===
-const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN; // BotFather Token
-const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;   // Your Telegram ID
-const SCRIPT_URL = process.env.SCRIPT_URL;         // Google Apps Script endpoint
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
+const SCRIPT_URL = process.env.SCRIPT_URL;
 const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
+const VERCEL_URL = process.env.VERCEL_URL; // e.g. https://your-app.vercel.app
 
-// Only start the bot if not running as a Vercel serverless function
-if (process.env.VERCEL !== '1') {
-  const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
+// === Email Transport ===
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: SMTP_USER,
+    pass: SMTP_PASS,
+  },
+});
 
-  // === Email Transport ===
-  const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: SMTP_USER,
-      pass: SMTP_PASS,
-    },
-  });
+// === HELPERS ===
+function generatePDF(data, filename = 'report.pdf') {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument();
+    const chunks = [];
+    doc.on('data', (chunk) => chunks.push(chunk));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
 
-  // === HELPERS ===
-  function generatePDF(data, filename = 'report.pdf') {
-    return new Promise((resolve, reject) => {
-      const doc = new PDFDocument();
-      const chunks = [];
-      doc.on('data', (chunk) => chunks.push(chunk));
-      doc.on('end', () => resolve(Buffer.concat(chunks)));
-
-      doc.fontSize(14).text('Repair Report', { align: 'center' });
-      doc.moveDown();
-      Object.entries(data).forEach(([key, val]) => {
-        doc.text(`${key}: ${val}`);
-      });
-      doc.end();
+    doc.fontSize(14).text('Repair Report', { align: 'center' });
+    doc.moveDown();
+    Object.entries(data).forEach(([key, val]) => {
+      doc.text(`${key}: ${val}`);
     });
-  }
-
-  function notifyAdmin(msg) {
-    bot.sendMessage(ADMIN_CHAT_ID, `[ADMIN NOTICE]\n${msg}`);
-  }
-
-  // === BOT COMMANDS ===
-  bot.onText(/^\/start/, (msg) => {
-    bot.sendMessage(msg.chat.id, 'Welcome to the Truck Bot 🚛\nUse /status <truckNo> or /row <rowNo>');
-  });
-
-  bot.onText(/^\/status (.+)/, async (msg, match) => {
-    const chatId = msg.chat.id;
-    const truck = match[1];
-    try {
-      const url = `${SCRIPT_URL}?action=getTruckStatus&sheet=TRANSIT&query=${encodeURIComponent(truck)}`;
-      const res = await fetch(url);
-      const json = await res.json();
-      if (!json.success) throw new Error(json.message);
-
-      const details = json.data[0];
-      let text = `🚚 *Truck Info for ${truck}*\n`;
-      for (let [k, v] of Object.entries(details)) {
-        text += `\n*${k}*: ${v}`;
-      }
-      bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
-    } catch (err) {
-      bot.sendMessage(chatId, `❌ Error: ${err.message}`);
-      notifyAdmin(`Error fetching status for ${truck}: ${err.message}`);
-    }
-  });
-
-  bot.onText(/^\/row (\d+)/, async (msg, match) => {
-    const chatId = msg.chat.id;
-    const row = parseInt(match[1]);
-    try {
-      const url = `${SCRIPT_URL}?action=getRowDetails&sheet=TRANSIT&query=${row}`;
-      const res = await fetch(url);
-      const json = await res.json();
-      if (!json.success) throw new Error(json.message);
-
-      const details = json.data[0];
-      const pdfBuffer = await generatePDF(details);
-      bot.sendDocument(chatId, pdfBuffer, {}, { filename: `Row${row}-Report.pdf` });
-    } catch (err) {
-      bot.sendMessage(chatId, `⚠️ PDF Generation Failed: ${err.message}`);
-      notifyAdmin(`Error fetching row ${row}: ${err.message}`);
-    }
-  });
-
-  bot.onText(/^\/report (.+)/, async (msg, match) => {
-    const chatId = msg.chat.id;
-    const truck = match[1];
-    try {
-      const url = `${SCRIPT_URL}?action=getTruckStatus&sheet=TRANSIT&query=${encodeURIComponent(truck)}`;
-      const res = await fetch(url);
-      const json = await res.json();
-      if (!json.success) throw new Error(json.message);
-
-      const details = json.data[0];
-      const pdfBuffer = await generatePDF(details);
-
-      await transporter.sendMail({
-        from: SMTP_USER,
-        to: 'recipient@example.com',
-        subject: `Repair Report - ${truck}`,
-        text: 'Attached is the repair report.',
-        attachments: [{ filename: `${truck}.pdf`, content: pdfBuffer }],
-      });
-
-      bot.sendMessage(chatId, `📧 Email sent with report for *${truck}*`, { parse_mode: 'Markdown' });
-    } catch (err) {
-      bot.sendMessage(chatId, `❌ Email Failed: ${err.message}`);
-      notifyAdmin(`Error emailing report for ${truck}: ${err.message}`);
-    }
-  });
-
-  // === FALLBACK ===
-  bot.on('message', (msg) => {
-    const isCommand = /^\//.test(msg.text);
-    if (!isCommand) {
-      bot.sendMessage(msg.chat.id, `❓ Unknown input. Use /status <truck> or /row <rowNo>`);
-    }
+    doc.end();
   });
 }
 
-// Export Vercel HTTP handler
+async function notifyAdmin(msg) {
+  // Optionally send a message to admin via Telegram API
+  if (ADMIN_CHAT_ID) {
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: ADMIN_CHAT_ID, text: `[ADMIN NOTICE]\n${msg}` }),
+    });
+  }
+}
+
+// === MAIN HANDLER ===
 export default async function handler(req, res) {
-  res.status(200).json({
-    status: 'ok',
-    message: 'Telegram bot API endpoint. Bot runs as a background process only, not via HTTP.',
+  // Optional: Set webhook via GET /setwebhook
+  if (req.method === 'GET' && req.url && req.url.startsWith('/setwebhook')) {
+    if (!VERCEL_URL) {
+      res.status(400).json({ error: 'VERCEL_URL env var required' });
+      return;
+    }
+    const webhookUrl = `${VERCEL_URL}/api/bot.js`;
+    const setWebhookRes = await fetch(
+      `https://api.telegram.org/bot${TELEGRAM_TOKEN}/setWebhook`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: webhookUrl }),
+      }
+    );
+    const data = await setWebhookRes.json();
+    res.status(200).json({ setWebhook: data, webhookUrl });
+    return;
+  }
+
+  // Only accept POST requests from Telegram
+  if (req.method !== 'POST') {
+    res.status(200).json({ status: 'ok', message: 'Send Telegram webhook updates via POST.' });
+    return;
+  }
+
+  let body = req.body;
+  // Vercel may not parse JSON automatically
+  if (!body) {
+    try {
+      body = JSON.parse(await new Promise((resolve, reject) => {
+        let data = '';
+        req.on('data', chunk => (data += chunk));
+        req.on('end', () => resolve(data));
+      }));
+    } catch (e) {
+      res.status(400).json({ error: 'Invalid JSON' });
+      return;
+    }
+  }
+
+  // === Handle Telegram update ===
+  try {
+    const message = body.message;
+    if (!message || !message.text) {
+      res.status(200).json({ status: 'ignored' });
+      return;
+    }
+    const chatId = message.chat.id;
+    const text = message.text.trim();
+
+    // === Command Handlers ===
+    if (/^\/start/.test(text)) {
+      await sendMessage(chatId, 'Welcome to the Truck Bot 🚛\nUse /status <truckNo> or /row <rowNo>');
+    } else if (/^\/status (.+)/.test(text)) {
+      const truck = text.match(/^\/status (.+)/)[1];
+      try {
+        const url = `${SCRIPT_URL}?action=getTruckStatus&sheet=TRANSIT&query=${encodeURIComponent(truck)}`;
+        const res2 = await fetch(url);
+        const json = await res2.json();
+        if (!json.success) throw new Error(json.message);
+
+        const details = json.data[0];
+        let reply = `🚚 *Truck Info for ${truck}*\n`;
+        for (let [k, v] of Object.entries(details)) {
+          reply += `\n*${k}*: ${v}`;
+        }
+        await sendMessage(chatId, reply, 'Markdown');
+      } catch (err) {
+        await sendMessage(chatId, `❌ Error: ${err.message}`);
+        await notifyAdmin(`Error fetching status for ${truck}: ${err.message}`);
+      }
+    } else if (/^\/row (\d+)/.test(text)) {
+      const row = parseInt(text.match(/^\/row (\d+)/)[1]);
+      try {
+        const url = `${SCRIPT_URL}?action=getRowDetails&sheet=TRANSIT&query=${row}`;
+        const res2 = await fetch(url);
+        const json = await res2.json();
+        if (!json.success) throw new Error(json.message);
+
+        const details = json.data[0];
+        const pdfBuffer = await generatePDF(details);
+
+        // Send PDF as document
+        await sendDocument(chatId, pdfBuffer, `Row${row}-Report.pdf`);
+      } catch (err) {
+        await sendMessage(chatId, `⚠️ PDF Generation Failed: ${err.message}`);
+        await notifyAdmin(`Error fetching row ${row}: ${err.message}`);
+      }
+    } else if (/^\/report (.+)/.test(text)) {
+      const truck = text.match(/^\/report (.+)/)[1];
+      try {
+        const url = `${SCRIPT_URL}?action=getTruckStatus&sheet=TRANSIT&query=${encodeURIComponent(truck)}`;
+        const res2 = await fetch(url);
+        const json = await res2.json();
+        if (!json.success) throw new Error(json.message);
+
+        const details = json.data[0];
+        const pdfBuffer = await generatePDF(details);
+
+        await transporter.sendMail({
+          from: SMTP_USER,
+          to: 'recipient@example.com',
+          subject: `Repair Report - ${truck}`,
+          text: 'Attached is the repair report.',
+          attachments: [{ filename: `${truck}.pdf`, content: pdfBuffer }],
+        });
+
+        await sendMessage(chatId, `📧 Email sent with report for *${truck}*`, 'Markdown');
+      } catch (err) {
+        await sendMessage(chatId, `❌ Email Failed: ${err.message}`);
+        await notifyAdmin(`Error emailing report for ${truck}: ${err.message}`);
+      }
+    } else {
+      await sendMessage(chatId, `❓ Unknown input. Use /status <truck> or /row <rowNo>`);
+    }
+
+    res.status(200).json({ status: 'ok' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// === Telegram API helpers ===
+async function sendMessage(chatId, text, parse_mode) {
+  await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text,
+      ...(parse_mode ? { parse_mode } : {}),
+    }),
+  });
+}
+
+async function sendDocument(chatId, buffer, filename) {
+  // Telegram sendDocument via HTTP API with multipart/form-data
+  // Use fetch + FormData (node-fetch v2 does not support FormData natively)
+  // Use 'form-data' package for this in production, but here is a minimal workaround:
+  const FormData = (await import('form-data')).default;
+  const form = new FormData();
+  form.append('chat_id', chatId);
+  form.append('document', buffer, { filename });
+
+  await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendDocument`, {
+    method: 'POST',
+    body: form,
+    headers: form.getHeaders(),
   });
 }
