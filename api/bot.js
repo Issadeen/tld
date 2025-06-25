@@ -396,3 +396,19 @@ bot.on('text', async (ctx) => {
   // For testing: echo the parsed data
   ctx.reply(`Parsed data:\n\`\`\`${JSON.stringify(data, null, 2)}\n\`\`\``);
 });
+
+// === Vercel Webhook Handler ===
+const handler = async (req, res) => {
+  if (req.method === 'POST') {
+    try {
+      await bot.handleUpdate(req.body, res);
+    } catch (err) {
+      console.error('Error handling update', err);
+      res.status(500).send('Error handling update');
+    }
+  } else {
+    res.status(200).send('OK');
+  }
+};
+
+export default handler;
