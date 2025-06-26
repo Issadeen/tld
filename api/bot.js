@@ -726,12 +726,34 @@ bot.command('status', async (ctx) => {
     const json = await res.json();
     if (!json.success) throw new Error(json.message);
 
-    const details = json.data[0];
-    let reply = `🚚 *Truck Info for ${truck}*\n`;
-    for (let [k, v] of Object.entries(details)) {
-      reply += `\n*${k}*: ${v}`;
+    // Handle multiple truck matches
+    if (json.data.length > 1) {
+      let reply = `🚚 *Found ${json.data.length} trucks matching "${truck}"*\n\n`;
+      
+      // Show a summary of each truck
+      json.data.forEach((details, index) => {
+        reply += `*Truck #${index + 1}: ${details['Reg No'] || details.reg_no || 'Unknown'}*\n`;
+        const keyInfo = ['Location', 'Driver', 'Status'];
+        keyInfo.forEach(key => {
+          const value = details[key] || details[key.toLowerCase()] || 'N/A';
+          reply += `${key}: ${value}\n`;
+        });
+        reply += '\n';
+      });
+      
+      reply += `Use \`/status exact:${truck}\` for more specific search.`;
+      await ctx.replyWithMarkdown(reply);
+    } else if (json.data.length === 1) {
+      // Single truck match - keep existing detailed output
+      const details = json.data[0];
+      let reply = `🚚 *Truck Info for ${truck}*\n`;
+      for (let [k, v] of Object.entries(details)) {
+        reply += `\n*${k}*: ${v}`;
+      }
+      await ctx.replyWithMarkdown(reply);
+    } else {
+      await ctx.reply(`No trucks found matching "${truck}"`);
     }
-    await ctx.replyWithMarkdown(reply);
   } catch (err) {
     await ctx.reply(`❌ Error: ${err.message}`);
     await notifyAdmin(`Error fetching status for ${truck}: ${err.message}`);
@@ -823,12 +845,34 @@ bot.hears(/^status\s+(.+)/i, async (ctx) => {
     const json = await res.json();
     if (!json.success) throw new Error(json.message);
 
-    const details = json.data[0];
-    let reply = `🚚 *Truck Info for ${truck}*\n`;
-    for (let [k, v] of Object.entries(details)) {
-      reply += `\n*${k}*: ${v}`;
+    // Handle multiple truck matches
+    if (json.data.length > 1) {
+      let reply = `🚚 *Found ${json.data.length} trucks matching "${truck}"*\n\n`;
+      
+      // Show a summary of each truck
+      json.data.forEach((details, index) => {
+        reply += `*Truck #${index + 1}: ${details['Reg No'] || details.reg_no || 'Unknown'}*\n`;
+        const keyInfo = ['Location', 'Driver', 'Status'];
+        keyInfo.forEach(key => {
+          const value = details[key] || details[key.toLowerCase()] || 'N/A';
+          reply += `${key}: ${value}\n`;
+        });
+        reply += '\n';
+      });
+      
+      reply += `Use \`status exact:${truck}\` for more specific search.`;
+      await ctx.replyWithMarkdown(reply);
+    } else if (json.data.length === 1) {
+      // Single truck match - keep existing detailed output
+      const details = json.data[0];
+      let reply = `🚚 *Truck Info for ${truck}*\n`;
+      for (let [k, v] of Object.entries(details)) {
+        reply += `\n*${k}*: ${v}`;
+      }
+      await ctx.replyWithMarkdown(reply);
+    } else {
+      await ctx.reply(`No trucks found matching "${truck}"`);
     }
-    await ctx.replyWithMarkdown(reply);
   } catch (err) {
     await ctx.reply(`❌ Error: ${err.message}`);
     await notifyAdmin(`Error fetching status for ${truck}: ${err.message}`);
