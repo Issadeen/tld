@@ -13,7 +13,17 @@ const healthCheck = require('./health-check');
 const startupCheck = require('./startup-check');
 const storageHelper = require('./storage-helper');
 const dataValidator = require('./data-validator'); // Add this line
-const { initializeNlp, processNlp } = require('./nlp-service');
+let initializeNlp;
+let processNlp;
+
+// Dynamically import nlp-service.js as it's an ES Module
+import('./nlp-service.js').then(nlpService => {
+    initializeNlp = nlpService.initializeNlp;
+    processNlp = nlpService.processNlp;
+}).catch(err => {
+    console.error("Failed to load nlp-service.js:", err);
+    // Handle error, e.g., disable NLP features or exit
+});
 
 // Run environment checks
 startupCheck.checkEnvironment();

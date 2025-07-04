@@ -1,7 +1,6 @@
-
-const { dockStart } = require('@nlpjs/core');
-const { Nlp } = require('@nlpjs/nlp');
-const { LangEn } = require('@nlpjs/lang-en-min');
+import { dockStart } from '@nlpjs/core';
+import { Nlp } from '@nlpjs/nlp';
+import { LangEn } from '@nlpjs/lang-en-min';
 
 let nlp;
 
@@ -39,10 +38,8 @@ async function initializeNlp() {
   
   // Add entities
   nlp.addNerRule('en', 'truck_id', 'regex', /[A-Z]{3}\s?\d{3}[A-Z]?/);
-
   nlp.addNerRule('en', 'consignor', 'regex', /MOK|GAPCO|HASS/i);
   nlp.addNerRule('en', 'dateRange', 'regex', /yesterday and today|today|yesterday/i);
-
 
   // Train the model
   await nlp.train();
@@ -58,4 +55,4 @@ async function processNlp(text) {
   return nlp.process('en', text);
 }
 
-module.exports = { initializeNlp, processNlp };
+export { initializeNlp, processNlp };
