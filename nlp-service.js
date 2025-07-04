@@ -35,6 +35,13 @@ async function initializeNlp() {
   nlp.addDocument('en', 'how many %consignor% trucks loaded %dateRange%', 'truck.query');
   nlp.addDocument('en', 'get entries for %truck_id%', 'truck.query');
   nlp.addDocument('en', 'how many %consignor% trucks have left', 'truck.query');
+
+  // Truck Repair
+  nlp.addDocument('en', 'I need to report a repair for %truck_id%', 'truck.repair');
+  nlp.addDocument('en', 'log a repair for %truck_id%', 'truck.repair');
+  nlp.addDocument('en', 'truck %truck_id% needs repair', 'truck.repair');
+  nlp.addDocument('en', 'initiate repair for %truck_id%', 'truck.repair');
+  nlp.addDocument('en', 'send repair data for %truck_id%', 'truck.repair');
   
   // Add entities
   nlp.addNerRule('en', 'truck_id', 'regex', /[A-Z]{3}\s?\d{3}[A-Z]?/);
