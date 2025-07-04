@@ -13,6 +13,7 @@ const healthCheck = require('./health-check');
 const startupCheck = require('./startup-check');
 const storageHelper = require('./storage-helper');
 const dataValidator = require('./data-validator'); // Add this line
+const { initializeNlp, processNlp } = require('./nlp-service');
 
 // Run environment checks
 startupCheck.checkEnvironment();
@@ -1538,6 +1539,47 @@ async function handleStayReport(data, reportType, msg, fromNumber) {
     }
 }
 
+async function handleTruckQuery(nlpResult, fromNumber) {
+    const { entities } = nlpResult;
+    const consignor = entities.find(e => e.entity === 'consignor')?.sourceText;
+    const dateRange = entities.find(e => e.entity === 'dateRange')?.sourceText;
+    const truckId = entities.find(e => e.entity === 'truck_id')?.sourceText;
+
+    let action = 'truckQuery';
+    let query = {};
+
+    if (consignor) query.consignor = consignor;
+    if (dateRange) query.dateRange = dateRange;
+    if (truckId) query.truckId = truckId;
+
+    if (nlpResult.utterance.includes('left')) {
+        query.status = 'left';
+    }
+
+    if (nlpResult.utterance.includes('entries')) {
+        query.column = 'TR812(s)';
+    }
+
+    try {
+        const url = new URL(GOOGLE_SCRIPT_URL);
+        url.searchParams.append('action', action);
+        url.searchParams.append('query', JSON.stringify(query));
+
+        const response = await fetch(url.toString(), { method: 'GET' });
+        const result = await response.json();
+
+        if (result.success) {
+            await client.sendMessage(fromNumber, result.message);
+        } else {
+            await client.sendMessage(fromNumber, `⚠️ ${result.message || 'Could not retrieve information.'}`);
+        }
+    } catch (e) {
+        console.error(`Error calling Google Script for truck query:`, e);
+        await client.sendMessage(fromNumber, "❌ Error connecting to Google Sheets. Admin notified.");
+        await notifyAdmin(`*Google Script Error (truckQuery):*\n${e.message}`);
+    }
+}
+
 // --- END OF NEW HANDLER FUNCTIONS ---
 
 
@@ -1813,6 +1855,17 @@ function setupClient() {
             }
 
             // Fallback if no other handler caught the message
+            const nlpResult = await processNlp(body);
+            if (nlpResult.intent === 'truck.status' && nlpResult.entities.length > 0) {
+                const truckId = nlpResult.entities[0].sourceText;
+                await handleCommand(`/status ${truckId}`, fromNumber);
+                return;
+            }
+            if (nlpResult.intent === 'truck.query') {
+                await handleTruckQuery(nlpResult, fromNumber);
+                return;
+            }
+
             await client.sendMessage(fromNumber, "❓ Sorry, I couldn't understand that. Send `/help` for available commands or use `/newtruck` to log a new truck entry.");
         } catch (err) {
             console.error("Error in message handler:", err);
@@ -1881,6 +1934,7 @@ async function initializeWhatsAppClient() {
     }
     
     // Start the initialization process
+    initializeNlp();
     return attemptInitialization();
 }
 

@@ -7,6 +7,7 @@ import PDFDocument from 'pdfkit';
 import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
 import qrcode from 'qrcode';  // Add this import at the top
+import { initializeNlp, processNlp } from '../nlp-service.js';
 dotenv.config();
 
 // === CONFIG ===
@@ -912,6 +913,18 @@ bot.on('text', async (ctx) => {
     return;
   }
 
+  const nlpResult = await processNlp(text);
+  if (nlpResult.intent === 'truck.status' && nlpResult.entities.length > 0) {
+      const truckId = nlpResult.entities[0].sourceText;
+      ctx.message.text = `/status ${truckId}`;
+      bot.handleUpdate(ctx.update);
+      return;
+  }
+  if (nlpResult.intent === 'truck.query') {
+      await handleTruckQuery(nlpResult, ctx);
+      return;
+  }
+
   // Parse repair report fields (Registration, Driver, Mobile, Location, Email, etc.)
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
   const data = {
@@ -1029,6 +1042,47 @@ bot.on('text', async (ctx) => {
   }
 });
 
+async function handleTruckQuery(nlpResult, ctx) {
+    const { entities } = nlpResult;
+    const consignor = entities.find(e => e.entity === 'consignor')?.sourceText;
+    const dateRange = entities.find(e => e.entity === 'dateRange')?.sourceText;
+    const truckId = entities.find(e => e.entity === 'truck_id')?.sourceText;
+
+    let action = 'truckQuery';
+    let query = {};
+
+    if (consignor) query.consignor = consignor;
+    if (dateRange) query.dateRange = dateRange;
+    if (truckId) query.truckId = truckId;
+
+    if (nlpResult.utterance.includes('left')) {
+        query.status = 'left';
+    }
+
+    if (nlpResult.utterance.includes('entries')) {
+        query.column = 'TR812(s)';
+    }
+
+    try {
+        const url = new URL(SCRIPT_URL);
+        url.searchParams.append('action', action);
+        url.searchParams.append('query', JSON.stringify(query));
+
+        const response = await fetch(url.toString(), { method: 'GET' });
+        const result = await response.json();
+
+        if (result.success) {
+            await ctx.reply(result.message);
+        } else {
+            await ctx.reply(`⚠️ ${result.message || 'Could not retrieve information.'}`);
+        }
+    } catch (e) {
+        console.error(`Error calling Google Script for truck query:`, e);
+        await ctx.reply("❌ Error connecting to Google Sheets. Admin notified.");
+        await notifyAdmin(`*Google Script Error (truckQuery):*\n${e.message}`);
+    }
+}
+
 // === Vercel Webhook Handler ===
 const handler = async (req, res) => {
   if (req.method === 'POST') {
@@ -1055,5 +1109,7 @@ if (process.env.NODE_ENV !== 'production') {
   process.once('SIGINT', () => bot.stop('SIGINT'));
   process.once('SIGTERM', () => bot.stop('SIGTERM'));
 }
+
+initializeNlp();
 
 export default handler;  // Export the handler function instead of the bot

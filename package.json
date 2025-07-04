@@ -7,6 +7,9 @@
     "start": "node api/bot.js"
   },
   "dependencies": {
+    "@nlpjs/core": "^5.0.0-alpha.5",
+    "@nlpjs/lang-en-min": "^5.0.0-alpha.5",
+    "@nlpjs/nlp": "^5.0.0-alpha.5",
     "dotenv": "^16.3.1",
     "node-fetch": "^2.6.7",
     "node-telegram-bot-api": "^0.61.0",

@@ -22,6 +22,8 @@ function doGet(e) {
       } else {
         result = handleGetRow(sheetName, rowNumber);
       }
+    } else if (action === 'truckQuery') {
+      result = handleTruckQuery(JSON.parse(query));
     } else {
       result = { success: false, message: "Invalid action or missing parameters." };
     }
@@ -35,6 +37,83 @@ function doGet(e) {
                          .setMimeType(ContentService.MimeType.JSON);
   }
 }
+
+function handleTruckQuery(query) {
+  var sheet;
+  var headers;
+  
+  // Default to TRANSIT sheet, but allow for SCT
+  if (query.sheet && query.sheet.toUpperCase() === 'SCT') {
+    sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('SCT');
+  } else {
+    sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('TRANSIT');
+  }
+  
+  var data = sheet.getDataRange().getValues();
+  headers = data.shift();
+  
+  var results = data.filter(function(row) {
+    var match = true;
+    
+    if (query.consignor) {
+      var consignorCol = headers.indexOf('CONSIGNOR');
+      if (row[consignorCol].toUpperCase() !== query.consignor.toUpperCase()) {
+        match = false;
+      }
+    }
+    
+    if (query.truckId) {
+      var truckNoCol = headers.indexOf('TRUCK No.');
+      if (row[truckNoCol].toUpperCase() !== query.truckId.toUpperCase()) {
+        match = false;
+      }
+    }
+    
+    if (query.dateRange) {
+      var loadingDateCol = headers.indexOf('LOADING DATE');
+      var loadingDate = new Date(row[loadingDateCol]);
+      var today = new Date();
+      var yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      
+      if (query.dateRange === 'today' && loadingDate.setHours(0,0,0,0) !== today.setHours(0,0,0,0)) {
+        match = false;
+      }
+      
+      if (query.dateRange === 'yesterday' && loadingDate.setHours(0,0,0,0) !== yesterday.setHours(0,0,0,0)) {
+        match = false;
+      }
+
+      if (query.dateRange === 'yesterday and today') {
+        var todayMatch = loadingDate.setHours(0,0,0,0) === today.setHours(0,0,0,0);
+        var yesterdayMatch = loadingDate.setHours(0,0,0,0) === yesterday.setHours(0,0,0,0);
+        if (!todayMatch && !yesterdayMatch) {
+            match = false;
+        }
+      }
+    }
+    
+    if (query.status === 'left') {
+      var gateOutCol = headers.indexOf('GATE OUT');
+      if (!row[gateOutCol]) {
+        match = false;
+      }
+    }
+    
+    return match;
+  });
+  
+  if (query.column) {
+    var colIndex = headers.indexOf(query.column);
+    var values = results.map(function(row) {
+      return row[colIndex];
+    });
+    return { success: true, message: 'Values for ' + query.column + ':\n' + values.join('\n') };
+  }
+  
+  return { success: true, message: 'Found ' + results.length + ' trucks.' };
+}
+
 
 function handleGetRow(sheetName, rowNumber) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
