@@ -683,6 +683,7 @@ bot.command('help', (ctx) =>
 Commands:
 $status <reg_no> - Check truck status
 /row <row_no> - Get details for a specific row
+/query <text> - Ask about trucks (e.g., /query trucks for KPC that left)
 /report <truckNo> - Email a repair report
 /format - Show format instructions
 /system - Show bot system status
@@ -759,6 +760,14 @@ bot.command('status', async (ctx) => {
     await ctx.reply(`❌ Error: ${err.message}`);
     await notifyAdmin(`Error fetching status for ${truck}: ${err.message}`);
   }
+});
+
+bot.command('query', async (ctx) => {
+  const text = ctx.message.text.substring('/query'.length).trim();
+  if (!text) {
+    return ctx.reply('Usage: /query <your query>\nExample: `/query trucks for KPC that left`', { parse_mode: 'Markdown' });
+  }
+  await handleTruckQuery(text, ctx);
 });
 
 bot.command('row', async (ctx) => {
@@ -1047,24 +1056,26 @@ bot.on('text', async (ctx) => {
   }
 });
 
-async function handleTruckQuery(nlpResult, ctx) {
-    const { entities } = nlpResult;
-    const consignor = entities.find(e => e.entity === 'consignor')?.sourceText;
-    const dateRange = entities.find(e => e.entity === 'dateRange')?.sourceText;
-    const truckId = entities.find(e => e.entity === 'truck_id')?.sourceText;
-
+async function handleTruckQuery(text, ctx) {
     let action = 'truckQuery';
     let query = {};
 
-    if (consignor) query.consignor = consignor;
-    if (dateRange) query.dateRange = dateRange;
-    if (truckId) query.truckId = truckId;
+    // Simple keyword/regex parsing instead of NLP
+    const consignorMatch = text.match(/for\s+([A-Z\s\d]+)/i);
+    if (consignorMatch) {
+        query.consignor = consignorMatch[1].trim();
+    }
 
-    if (nlpResult.utterance.includes('left')) {
+    const truckIdMatch = text.match(/\b([A-Z]{2,3}\s?\d{3,4}[A-Z])\b/i);
+    if (truckIdMatch) {
+        query.truckId = truckIdMatch[1].replace(/\s/, ''); // Normalize truck ID
+    }
+
+    if (text.includes('left')) {
         query.status = 'left';
     }
 
-    if (nlpResult.utterance.includes('entries')) {
+    if (text.includes('entries')) {
         query.column = 'TR812(s)';
     }
 
@@ -1072,6 +1083,8 @@ async function handleTruckQuery(nlpResult, ctx) {
         const url = new URL(SCRIPT_URL);
         url.searchParams.append('action', action);
         url.searchParams.append('query', JSON.stringify(query));
+
+        await ctx.reply(`🔍 Searching with query: \`${JSON.stringify(query)}\`...`, { parse_mode: 'Markdown' });
 
         const response = await fetch(url.toString(), { method: 'GET' });
         const result = await response.json();
