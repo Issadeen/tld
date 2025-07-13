@@ -1520,7 +1520,7 @@ async function handleStayReport(data, reportType, msg, fromNumber) {
        
 
         // 2. Send PDF to user
-        const pdfMedia = new MessageMedia('application/pdf', pdfBase64, `${reportTitle}Report-${data.omc_name.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`);
+        const pdfMedia = new MessageMedia('application/pdf', pdfBase64, `${reportTitle}Report-${data.omc_name.replace(/[^azA-Z0-9]/g, '_')}.pdf`);
         await client.sendMessage(fromNumber, pdfMedia, { caption: `${reportTitle} report for *${data.omc_name}* generated.` });
         
         // 3. Prepare and send Email
@@ -1806,30 +1806,7 @@ function setupClient() {
                 return;
             }
 
-            // Check for special query patterns without slash
-            // Handle "status <truck>" pattern without slash
-            const statusMatch = body.trim().match(/^status\s+([A-Za-z0-9\/]+)(\s+sct)?$/i); // Allow / in reg_no
-            if (statusMatch) {
-                const command = `/status ${statusMatch[1]}${statusMatch[2] ? ' ' + statusMatch[2].trim() : ''}`;
-                await handleCommand(command, fromNumber);
-                return;
-            }
-
-            // Handle "row <number>" pattern without slash
-            const rowMatch = body.trim().match(/^row\s+(\d+)(\s+sct)?$/i);
-            if (rowMatch) {
-                const command = `/row ${rowMatch[1]}${rowMatch[2] ? ' ' + rowMatch[2].trim() : ''}`;
-                await handleCommand(command, fromNumber);
-                return;
-            }
-
-            // Handle "newtruck" without slash (as a convenience)
-            if (body.trim().toLowerCase() === 'newtruck') {
-                await handleCommand('/newtruck', fromNumber);
-                return;
-            }
-
-            // Parse the message
+            // Parse the message first (this handles repair requests as default)
             const parseResult = parseTruckRequest(body);
 
             // Handle greetings
@@ -1844,17 +1821,7 @@ function setupClient() {
                 return;
             }
 
-            // Handle incomplete or error from parsing
-            if (parseResult.status === 'incomplete') {
-                await client.sendMessage(fromNumber, `⚠️ Missing fields: ${parseResult.missing.join(', ')}. Please check the format using /format or use /newtruck for guided entry.`);
-                return;
-            }
-            if (parseResult.status === 'error') {
-                await client.sendMessage(fromNumber, `❌ Could not process your message: ${parseResult.message}`);
-                return;
-            }
-
-            // Handle repair or stay reports from parsing
+            // Handle repair or stay reports from parsing (PRIORITY - before NLP)
             if (parseResult.status === 'complete' && parseResult.type === 'repair') {
                 await handleRepairRequest(parseResult.data, msg, fromNumber);
                 return;
@@ -1864,19 +1831,39 @@ function setupClient() {
                 return;
             }
 
-            // Fallback if no other handler caught the message
+            // Handle incomplete repairs - show missing fields (PRIORITY - before NLP)
+            if (parseResult.status === 'incomplete' && parseResult.type === 'repair') {
+                await client.sendMessage(fromNumber, `⚠️ Missing fields for repair request: ${parseResult.missing.join(', ')}. Please check the format using /format or use /newtruck for guided entry.`);
+                return;
+            }
+
+            // Handle incomplete other types
+            if (parseResult.status === 'incomplete') {
+                await client.sendMessage(fromNumber, `⚠️ Missing fields: ${parseResult.missing.join(', ')}. Please check the format using /format or use /newtruck for guided entry.`);
+                return;
+            }
+            if (parseResult.status === 'error') {
+                await client.sendMessage(fromNumber, `❌ Could not process your message: ${parseResult.message}`);
+                return;
+            }
+
+            // Only use NLP for specific query patterns that didn't match repair format
+            // This ensures repair remains the default behavior for unstructured messages
             const nlpResult = await processNlp(body);
-            if (nlpResult.intent === 'truck.status' && nlpResult.entities.length > 0) {
+            
+            // Only process NLP if it's a high-confidence match for specific intents
+            if (nlpResult.intent === 'truck.status' && nlpResult.score > 0.7 && nlpResult.entities.length > 0) {
                 const truckId = nlpResult.entities[0].sourceText;
                 await handleCommand(`/status ${truckId}`, fromNumber);
                 return;
             }
-            if (nlpResult.intent === 'truck.query') {
+            if (nlpResult.intent === 'truck.query' && nlpResult.score > 0.7) {
                 await handleTruckQuery(nlpResult, fromNumber);
                 return;
             }
 
-            await client.sendMessage(fromNumber, "❓ Sorry, I couldn't understand that. Send `/help` for available commands or use `/newtruck` to log a new truck entry.");
+            // Default fallback - suggest repair format or commands
+            await client.sendMessage(fromNumber, "❓ I couldn't understand that message. If you're reporting a repair, please use this format:\n\n```\nRegistration Number\nDriver Name\nMobile Number\nLocation\nEmail Address\n```\n\nOr send `/help` for other commands, `/newtruck` for guided truck entry.");
         } catch (err) {
             console.error("Error in message handler:", err);
             try {
