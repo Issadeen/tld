@@ -7,7 +7,7 @@ import PDFDocument from 'pdfkit';
 import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
 import qrcode from 'qrcode';  // Add this import at the top
-import { initializeNlp, processNlp } from '../nlp-service.js';
+// import { initializeNlp, processNlp } from '../nlp-service.js';
 dotenv.config();
 
 // === CONFIG ===
@@ -909,10 +909,14 @@ bot.on('text', async (ctx) => {
     /^status\s+/i.test(text) ||
     /^row\s+/i.test(text)
   ) {
-    ctx.reply('❓ Unknown input. Use /status <truckNo> or /row <rowNo>');
-    return;
+    // The original code had a reply here, but it might be better to let it fall through
+    // to the default handler if it's not a known command format.
+    // If you want to restore the "Unknown input" message, you can add:
+    // ctx.reply('❓ Unknown input. Use /status <truckNo> or /row <rowNo>');
+    // return;
   }
 
+  /*
   const nlpResult = await processNlp(text);
   if (nlpResult.intent === 'truck.status' && nlpResult.entities.length > 0) {
       const truckId = nlpResult.entities[0].sourceText;
@@ -924,6 +928,7 @@ bot.on('text', async (ctx) => {
       await handleTruckQuery(nlpResult, ctx);
       return;
   }
+  */
 
   // Parse repair report fields (Registration, Driver, Mobile, Location, Email, etc.)
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
@@ -1110,6 +1115,6 @@ if (process.env.NODE_ENV !== 'production') {
   process.once('SIGTERM', () => bot.stop('SIGTERM'));
 }
 
-initializeNlp();
+// initializeNlp();
 
 export default handler;  // Export the handler function instead of the bot
