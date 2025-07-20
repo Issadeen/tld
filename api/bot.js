@@ -1080,7 +1080,7 @@ bot.on('text', async (ctx) => {
 async function handleTruckQuery(text, ctx) {
     let action = 'truckQuery';
     let query = {};
-    
+
     // Normalize text - make case insensitive and clean up
     const normalizedText = text.toLowerCase().replace(/\s+/g, ' ').trim();
 
@@ -1227,6 +1227,142 @@ async function handleTruckQuery(text, ctx) {
                 return;
             } else {
                 await ctx.reply(`No trucks found for query: ${searchDescription}`, { parse_mode: 'Markdown' });
+                return;
+            }
+        }
+
+        // If searching by consignor/company, do a two-step process:
+        // 1. Fetch all consignor/company names and their row numbers.
+        // 2. Filter locally for partial match, then fetch full row details for those rows.
+
+        if (query.consignor && !query.truckId) {
+            await ctx.reply(`🔍 Searching for trucks for "${query.consignor.toUpperCase()}"...`, { parse_mode: 'Markdown' });
+
+            // Step 1: Fetch all consignor/company names and their row numbers (limit as needed)
+            const allUrl = new URL(SCRIPT_URL);
+            allUrl.searchParams.append('action', action);
+            allUrl.searchParams.append('query', JSON.stringify({ limit: 1000, columns: ['CONSIGNOR'] }));
+
+            let response = await fetch(allUrl.toString(), { method: 'GET' });
+            let result = await response.json();
+
+            if (result.success && result.data && Array.isArray(result.data)) {
+                const searchTerm = query.consignor.toLowerCase();
+                // Each result should have at least CONSIGNOR and ROW_NUMBER
+                const matchingRows = result.data
+                    .map((row, idx) => ({
+                        rowNumber: row.ROW_NUMBER || row.rowNumber || row.Row || (idx + 2),
+                        consignor: (row.CONSIGNOR || row.Consignor || row.consignor || '').toString()
+                    }))
+                    .filter(row =>
+                        row.consignor.toLowerCase().includes(searchTerm)
+                    );
+
+                if (matchingRows.length === 0) {
+                    await ctx.reply(`No trucks found for company: "${query.consignor}"\n\n💡 Try a shorter company name or check spelling.`, { parse_mode: 'Markdown' });
+                    return;
+                }
+
+                // Step 2: For each matching row, fetch the full row details
+                // (Batch fetch if your backend supports it, otherwise fetch one by one)
+                let trucks = [];
+                for (const row of matchingRows) {
+                    const rowUrl = new URL(SCRIPT_URL);
+                    rowUrl.searchParams.append('action', 'getRowDetails');
+                    rowUrl.searchParams.append('sheet', 'TRANSIT');
+                    rowUrl.searchParams.append('query', row.rowNumber);
+                    try {
+                        const rowRes = await fetch(rowUrl.toString(), { method: 'GET' });
+                        const rowJson = await rowRes.json();
+                        if (rowJson.success && rowJson.data && Array.isArray(rowJson.data) && rowJson.data[0]) {
+                            trucks.push(rowJson.data[0]);
+                        }
+                    } catch (e) {
+                        // Ignore errors for individual rows
+                    }
+                }
+
+                if (trucks.length === 0) {
+                    await ctx.reply(`No detailed truck data found for company: "${query.consignor}"`, { parse_mode: 'Markdown' });
+                    return;
+                }
+
+                // Optionally filter by status/column if present
+                if (query.status) {
+                    trucks = trucks.filter(truck =>
+                        (truck['Left Depot'] || truck.leftDepot || truck.Left || '').toString().toLowerCase().includes('left')
+                    );
+                }
+                if (query.column === 'TR812(s)') {
+                    trucks = trucks.filter(truck => truck['TR812(s)'] || truck.TR812s);
+                }
+
+                let reply = `🚚 *Found ${trucks.length} truck${trucks.length > 1 ? 's' : ''} for: "${query.consignor.toUpperCase()}"*\n\n`;
+                trucks.forEach((truck, index) => {
+                    const rowNum = truck.ROW_NUMBER || truck.rowNumber || truck.Row || (index + 2);
+                    const regNo = truck['TRUCK No.'] || truck['Reg No'] || truck.reg_no || truck.RegNo || 'Unknown';
+                    const consignor = truck.CONSIGNOR || truck.Consignor || truck.consignor || 'N/A';
+                    const destination = truck.DESTINATION || truck.destination || 'N/A';
+                    const driver = truck.DRIVER || truck.Driver || truck.driver || truck['Driver Name'] || 'N/A';
+                    const ssraComment = truck['SSRA COMMENT'] || truck.ssra_comment || '';
+                    const drcComment = truck['DRC COMMENT'] || truck.drc_comment || '';
+                    const hvoComment = truck['HVO COMMENT'] || truck.hvo_comment || '';
+                    const arming = truck.ARMING || truck.arming || '';
+                    const seals = truck.SEALS || truck.seals || '';
+                    const gatepass = truck.GATEPASS || truck.gatepass || '';
+                    const kpcExit = truck['KPC EXIT'] || truck.kpc_exit || '';
+                    reply += `*${index + 1}. ${regNo}* (Row ${rowNum})\n`;
+                    reply += `   📍 ${consignor} → ${destination}\n`;
+                    if (driver !== 'N/A') reply += `   👤 Driver: ${driver}\n`;
+                    const statusFields = [];
+                    if (ssraComment) statusFields.push(`SSRA: ${ssraComment}`);
+                    if (drcComment) statusFields.push(`DRC: ${drcComment}`);
+                    if (hvoComment) statusFields.push(`HVO: ${hvoComment}`);
+                    if (arming) statusFields.push(`🔫 ${arming}`);
+                    if (seals) statusFields.push(`🔒 Seals: ${seals}`);
+                    if (gatepass) statusFields.push(`🚪 Gate: ${gatepass}`);
+                    if (kpcExit) statusFields.push(`🚚 Exit: ${kpcExit}`);
+                    if (statusFields.length > 0) {
+                        reply += `   📋 ${statusFields.slice(0, 3).join(' • ')}\n`;
+                        if (statusFields.length > 3) {
+                            reply += `   📋 ${statusFields.slice(3).join(' • ')}\n`;
+                        }
+                    }
+                    reply += '\n';
+                });
+                if (trucks.length > 1) {
+                    const exitedCount = trucks.filter(t => t['KPC EXIT'] || t.kpc_exit).length;
+                    const armedCount = trucks.filter(t => {
+                        const arming = t.ARMING || t.arming || '';
+                        return arming && arming.toLowerCase().includes('ok');
+                    }).length;
+                    reply += `📊 *Summary:*\n`;
+                    reply += `• Total trucks: ${trucks.length}\n`;
+                    if (exitedCount > 0) reply += `• Exited KPC: ${exitedCount}\n`;
+                    if (armedCount > 0) reply += `• Armed OK: ${armedCount}\n`;
+                }
+                if (reply.length > 4000) {
+                    const messages = [];
+                    const lines = reply.split('\n');
+                    let currentMessage = '';
+                    for (const line of lines) {
+                        if ((currentMessage + line + '\n').length > 4000) {
+                            messages.push(currentMessage);
+                            currentMessage = line + '\n';
+                        } else {
+                            currentMessage += line + '\n';
+                        }
+                    }
+                    if (currentMessage) messages.push(currentMessage);
+                    for (const msg of messages) {
+                        await ctx.replyWithMarkdown(msg);
+                    }
+                } else {
+                    await ctx.replyWithMarkdown(reply);
+                }
+                return;
+            } else {
+                await ctx.reply(`No trucks found for query: "${query.consignor}"`, { parse_mode: 'Markdown' });
                 return;
             }
         }
