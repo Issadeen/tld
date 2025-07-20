@@ -1125,11 +1125,11 @@ async function handleTruckQuery(text, ctx) {
     if (query.column === 'TR812(s)') searchDescription += ' (entries focus)';
 
     try {
-        // Always fetch a batch and filter locally for consignor queries for best partial match support
+        // --- NEW: Always fetch all rows and filter locally for consignor/company queries ---
         if (query.consignor && !query.truckId) {
             await ctx.reply(`🔍 Searching for ${searchDescription}...`, { parse_mode: 'Markdown' });
 
-            // Fetch a batch of trucks (limit as needed, e.g. 1000 for better coverage)
+            // Fetch all rows (not just columns) for robust local filtering
             const allUrl = new URL(SCRIPT_URL);
             allUrl.searchParams.append('action', action);
             allUrl.searchParams.append('query', JSON.stringify({ limit: 1000 }));
@@ -1139,8 +1139,8 @@ async function handleTruckQuery(text, ctx) {
 
             if (result.success && result.data && Array.isArray(result.data)) {
                 const searchTerm = query.consignor.toLowerCase();
+                // Filter all rows where consignor/company contains the search term (case-insensitive, partial)
                 let trucks = result.data.filter(truck => {
-                    // Try all possible fields and allow partial match anywhere in the string
                     const consignorField =
                         (truck.CONSIGNOR || truck.Consignor || truck.consignor || '').toString().toLowerCase();
                     return consignorField.includes(searchTerm);
