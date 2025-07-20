@@ -1368,11 +1368,60 @@ async function handleTruckQuery(text, ctx) {
         }
 
         // Otherwise, fallback to original backend query for truckId or other queries
-        // ...existing code...
+        await ctx.reply(`🔍 Searching for trucks matching "${query.truckId || 'your query'}"...`, { parse_mode: 'Markdown' })
+        const url = new URL(SCRIPT_URL)
+        url.searchParams.append('action', action)
+        url.searchParams.append('query', JSON.stringify(query))
+        const response = await fetch(url.toString(), { method: 'GET' })
+        const result = await response.json()
+        if (!result.success) {
+            throw new Error(result.message || 'Unknown error fetching truck data');
+        }
+        if (result.data.length === 0) {
+            await ctx.reply(`No trucks found for query: "${query.truckId || 'your query'}"`, { parse_mode: 'Markdown' });
+            return;
+        }
+        let reply = `🚚 *Found ${result.data.length} truck${result.data.length > 1 ? 's' : ''} matching: "${query.truckId || 'your query'}"*:\n\n`
+        result.data.forEach((truck, index) => {
+            const rowNum = truck.ROW_NUMBER || truck.rowNumber || truck.Row || (index + 2);
+            const regNo = truck['TRUCK No.'] || truck['Reg No'] || truck.reg_no || truck.RegNo || 'Unknown';
+            const consignor = truck.CONSIGNOR || truck.Consignor || truck.consignor || 'N/A';
+            const destination = truck.DESTINATION || truck.destination || 'N/A';
+            const driver = truck.DRIVER || truck.Driver || truck.driver || truck['Driver Name'] || 'N/A';
+            const ssraComment = truck['SSRA COMMENT'] || truck.ssra_comment || '';
+            const drcComment = truck['DRC COMMENT'] || truck.drc_comment || '';
+            const hvoComment = truck['HVO COMMENT'] || truck.hvo_comment || '';
+            const arming = truck.ARMING || truck.arming || '';
+            const seals = truck.SEALS || truck.seals || '';
+            const gatepass = truck.GATEPASS || truck.gatepass || '';
+            const kpcExit = truck['KPC EXIT'] || truck.kpc_exit || '';
+            reply += `*${index + 1}. ${regNo}* (Row ${rowNum})\n`;
+            reply += `   📍 ${consignor} → ${destination}\n`;
+            if (driver !== 'N/A') reply += `   👤 Driver: ${driver}\n`;
+            const statusFields = [];
+            if (ssraComment) statusFields.push(`SSRA: ${ssraComment}`);
+            if (drcComment) statusFields.push(`DRC: ${drcComment}`);
+            if (hvoComment) statusFields.push(`HVO: ${hvoComment}`);
+            if (arming) statusFields.push(`🔫 ${arming}`);
+            if (seals) statusFields.push(`🔒 Seals: ${seals}`);
+            if (gatepass) statusFields.push(`🚪 Gate: ${gatepass}`);
+            if (kpcExit) statusFields.push(`🚚 Exit: ${kpcExit}`);
+            if (statusFields.length > 0) {
+                reply += `   📋 ${statusFields.slice(0, 3).join(' • ')}\n`;
+                if (statusFields.length > 3) {
+                    reply += `   📋 ${statusFields.slice(3).join(' • ')}\n`;
+                }
+            }
+        });
+        await ctx.replyWithMarkdown(reply);
     } catch (e) {
-        console.error(`Error calling Google Script for truck query:`, e);
-        await ctx.reply("❌ Error connecting to Google Sheets. Admin notified.");
-        await notifyAdmin(`*Google Script Error (truckQuery):*\n${e.message}`);
+        console.error(`Error processing truck query:`, e);  // Log the error for debugging
+        await ctx.reply("❌ Error processing your query. Admin notified.");
+        await notifyAdmin(`*Truck Query Error:*\n${e.message}`);
+    }
+    // If we reach here, it means no specific truckId or consignor was matched
+    if (!query.truckId && !query.consignor) {
+        await ctx.reply("❓ Unknown input. Use /status <truckNo> or /row <rowNo> for specific queries.");
     }
 }
 
