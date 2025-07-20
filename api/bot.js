@@ -1374,11 +1374,13 @@ async function handleTruckQuery(text, ctx) {
         url.searchParams.append('query', JSON.stringify(query))
         const response = await fetch(url.toString(), { method: 'GET' })
         const result = await response.json()
+        // --- PATCH: Defensive check for missing or non-array data ---
         if (!result.success) {
             throw new Error(result.message || 'Unknown error fetching truck data');
         }
-        if (result.data.length === 0) {
-            await ctx.reply(`No trucks found for query: "${query.truckId || 'your query'}"`, { parse_mode: 'Markdown' });
+        if (!Array.isArray(result.data) || result.data.length === 0) {
+            // If backend returned a message, show it; else generic message
+            await ctx.reply(result.message ? result.message : `No trucks found for query: "${query.truckId || 'your query'}"`, { parse_mode: 'Markdown' });
             return;
         }
         let reply = `🚚 *Found ${result.data.length} truck${result.data.length > 1 ? 's' : ''} matching: "${query.truckId || 'your query'}"*:\n\n`

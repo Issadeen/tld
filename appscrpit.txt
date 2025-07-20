@@ -80,16 +80,21 @@ function handleTruckQuery(query) {
       }
     }
 
-    // If no dateRange, search throughout the sheet (all rows)
+    // --- PATCH: Partial, case-insensitive consignor match ---
     if (query.consignor) {
       var consignorCol = headers.indexOf('CONSIGNOR');
-      if (row[consignorCol].toUpperCase() !== query.consignor.toUpperCase()) {
+      var cell = (row[consignorCol] || '').toString().toLowerCase();
+      var search = query.consignor.toString().toLowerCase();
+      if (cell.indexOf(search) === -1) {
         match = false;
       }
     }
+    // --- PATCH: Partial, case-insensitive truckId match ---
     if (query.truckId) {
       var truckNoCol = headers.indexOf('TRUCK No.');
-      if (row[truckNoCol].toUpperCase() !== query.truckId.toUpperCase()) {
+      var cell = (row[truckNoCol] || '').toString().toLowerCase();
+      var search = query.truckId.toString().toLowerCase();
+      if (cell.indexOf(search) === -1) {
         match = false;
       }
     }
@@ -101,16 +106,36 @@ function handleTruckQuery(query) {
     }
     return match;
   });
-  
+
+  // --- PATCH: Limit results if query.limit is set ---
+  var limitedResults = results;
+  if (query.limit && !isNaN(query.limit)) {
+    limitedResults = results.slice(0, Number(query.limit));
+  }
+
+  // --- PATCH: Always return data array for bot filtering ---
   if (query.column) {
     var colIndex = headers.indexOf(query.column);
-    var values = results.map(function(row) {
+    var values = limitedResults.map(function(row) {
       return row[colIndex];
     });
-    return { success: true, message: 'Values for ' + query.column + ':\n' + values.join('\n') };
+    return { success: true, message: 'Values for ' + query.column + ':\n' + values.join('\n'), data: values };
   }
-  
-  return { success: true, message: 'Found ' + results.length + ' trucks.' };
+
+  // Convert rows to objects with headers
+  var dataObjs = limitedResults.map(function(row, idx) {
+    var obj = { ROW_NUMBER: idx + 2 }; // +2 because headers removed and 1-based
+    for (var i = 0; i < headers.length; i++) {
+      obj[headers[i]] = row[i];
+    }
+    return obj;
+  });
+
+  return { 
+    success: true, 
+    message: 'Found ' + results.length + ' trucks.', 
+    data: dataObjs 
+  };
 }
 
 
