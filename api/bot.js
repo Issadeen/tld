@@ -1092,6 +1092,8 @@ async function handleTruckQuery(text, ctx) {
         consignor = consignor.replace(/^(trucks?|for|the)\s+/i, '').replace(/\s+(trucks?|that|left|entries)$/i, '');
         if (consignor.length > 1) {
             query.consignor = consignor;
+            // Add partial matching flag for more flexible search
+            query.partialMatch = true;
         }
     }
 
@@ -1132,7 +1134,12 @@ async function handleTruckQuery(text, ctx) {
             const trucks = result.data;
             
             if (trucks.length === 0) {
-                await ctx.reply(`No trucks found for query: ${searchDescription}`);
+                // If no results found, suggest alternative searches
+                let suggestion = '';
+                if (query.consignor) {
+                    suggestion = `\n\n💡 Try:\n• \`/query ${query.consignor.split(' ')[0]}\` (shorter name)\n• \`/status [truck_number]\` for specific truck`;
+                }
+                await ctx.reply(`No trucks found for query: ${searchDescription}${suggestion}`, { parse_mode: 'Markdown' });
                 return;
             }
 
@@ -1140,36 +1147,40 @@ async function handleTruckQuery(text, ctx) {
             let reply = `🚚 *Found ${trucks.length} truck${trucks.length > 1 ? 's' : ''} for: ${searchDescription}*\n\n`;
 
             trucks.forEach((truck, index) => {
-                const rowNum = truck.rowNumber || truck.Row || (index + 2); // Assume row 2+ if not provided
-                const regNo = truck['Reg No'] || truck.reg_no || truck.RegNo || 'Unknown';
-                const consignor = truck.Consignor || truck.consignor || 'N/A';
-                const location = truck.Location || truck.location || 'N/A';
-                const driver = truck.Driver || truck.driver || truck['Driver Name'] || 'N/A';
+                const rowNum = truck.ROW_NUMBER || truck.rowNumber || truck.Row || (index + 2);
+                const regNo = truck['TRUCK No.'] || truck['Reg No'] || truck.reg_no || truck.RegNo || 'Unknown';
+                const consignor = truck.CONSIGNOR || truck.Consignor || truck.consignor || 'N/A';
+                const destination = truck.DESTINATION || truck.destination || 'N/A';
+                const driver = truck.DRIVER || truck.Driver || truck.driver || truck['Driver Name'] || 'N/A';
                 
                 // Status indicators
-                const leftStatus = truck['Left Depot'] || truck.leftDepot || truck.Left || '';
-                const gateOut = truck['GATEPASS GATE OUT'] || truck.gateOut || '';
+                const ssraComment = truck['SSRA COMMENT'] || truck.ssra_comment || '';
+                const drcComment = truck['DRC COMMENT'] || truck.drc_comment || '';
+                const hvoComment = truck['HVO COMMENT'] || truck.hvo_comment || '';
+                const arming = truck.ARMING || truck.arming || '';
+                const seals = truck.SEALS || truck.seals || '';
+                const gatepass = truck.GATEPASS || truck.gatepass || '';
+                const kpcExit = truck['KPC EXIT'] || truck.kpc_exit || '';
                 
                 reply += `*${index + 1}. ${regNo}* (Row ${rowNum})\n`;
-                reply += `   Company: ${consignor}\n`;
-                reply += `   Location: ${location}\n`;
-                reply += `   Driver: ${driver}\n`;
+                reply += `   📍 ${consignor} → ${destination}\n`;
+                if (driver !== 'N/A') reply += `   👤 Driver: ${driver}\n`;
                 
                 // Add key status fields if available
                 const statusFields = [];
                 
-                if (truck['SSRA COMMENT']) statusFields.push(`SSRA: ${truck['SSRA COMMENT']}`);
-                if (truck['DRC COMMENT']) statusFields.push(`DRC: ${truck['DRC COMMENT']}`);
-                if (truck['HVO COMMENT']) statusFields.push(`HVO: ${truck['HVO COMMENT']}`);
-                if (truck.ARMING) statusFields.push(`Arming: ${truck.ARMING}`);
-                if (truck.SEALS) statusFields.push(`Seals: ${truck.SEALS}`);
-                if (gateOut) statusFields.push(`Gate Out: ${gateOut}`);
-                if (leftStatus) statusFields.push(`Left: ${leftStatus}`);
+                if (ssraComment) statusFields.push(`SSRA: ${ssraComment}`);
+                if (drcComment) statusFields.push(`DRC: ${drcComment}`);
+                if (hvoComment) statusFields.push(`HVO: ${hvoComment}`);
+                if (arming) statusFields.push(`🔫 ${arming}`);
+                if (seals) statusFields.push(`🔒 Seals: ${seals}`);
+                if (gatepass) statusFields.push(`🚪 Gate: ${gatepass}`);
+                if (kpcExit) statusFields.push(`🚚 Exit: ${kpcExit}`);
                 
                 if (statusFields.length > 0) {
-                    reply += `   Status: ${statusFields.slice(0, 2).join(', ')}\n`; // Limit to first 2 to avoid long messages
-                    if (statusFields.length > 2) {
-                        reply += `   More: ${statusFields.slice(2).join(', ')}\n`;
+                    reply += `   📋 ${statusFields.slice(0, 3).join(' • ')}\n`;
+                    if (statusFields.length > 3) {
+                        reply += `   📋 ${statusFields.slice(3).join(' • ')}\n`;
                     }
                 }
                 
@@ -1178,13 +1189,16 @@ async function handleTruckQuery(text, ctx) {
 
             // Add summary statistics if multiple trucks
             if (trucks.length > 1) {
-                const leftCount = trucks.filter(t => t['Left Depot'] || t.leftDepot || t.Left).length;
-                const armedCount = trucks.filter(t => t.ARMING && t.ARMING.toLowerCase().includes('armed')).length;
+                const exitedCount = trucks.filter(t => t['KPC EXIT'] || t.kpc_exit).length;
+                const armedCount = trucks.filter(t => {
+                    const arming = t.ARMING || t.arming || '';
+                    return arming && arming.toLowerCase().includes('ok');
+                }).length;
                 
                 reply += `📊 *Summary:*\n`;
                 reply += `• Total trucks: ${trucks.length}\n`;
-                if (leftCount > 0) reply += `• Left depot: ${leftCount}\n`;
-                if (armedCount > 0) reply += `• Armed: ${armedCount}\n`;
+                if (exitedCount > 0) reply += `• Exited KPC: ${exitedCount}\n`;
+                if (armedCount > 0) reply += `• Armed OK: ${armedCount}\n`;
             }
 
             // Split message if too long (Telegram limit is ~4096 chars)
@@ -1213,7 +1227,12 @@ async function handleTruckQuery(text, ctx) {
         } else if (result.success) {
             await ctx.reply(result.message || 'Query completed but no detailed data available.');
         } else {
-            await ctx.reply(`⚠️ ${result.message || 'Could not retrieve information.'}`);
+            // If query failed, try to provide helpful feedback
+            let errorMsg = `⚠️ ${result.message || 'Could not retrieve information.'}`;
+            if (query.consignor) {
+                errorMsg += `\n\n💡 Try searching with a truck number instead:\n\`/status [truck_number]\``;
+            }
+            await ctx.reply(errorMsg, { parse_mode: 'Markdown' });
         }
     } catch (e) {
         console.error(`Error calling Google Script for truck query:`, e);
