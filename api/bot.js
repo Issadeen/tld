@@ -765,7 +765,23 @@ bot.command('status', async (ctx) => {
 bot.command('query', async (ctx) => {
   const text = ctx.message.text.substring('/query'.length).trim();
   if (!text) {
-    return ctx.reply('Usage: /query <your query>\nExample: `/query trucks for KPC that left`', { parse_mode: 'Markdown' });
+    return ctx.reply(
+      `Usage: /query <your query>
+      
+*Examples:*
+• \`/query trucks for KPC\`
+• \`/query for trucks mok petro\` 
+• \`/query trucks for KPC that left\`
+• \`/query entries for KDD567F\`
+• \`/query left trucks for shell\`
+
+*Keywords:*
+• \`for [company]\` - Find trucks for a company
+• \`left\` - Filter trucks that have left
+• \`entries\` - Show entry information
+• Any truck registration number`, 
+      { parse_mode: 'Markdown' }
+    );
   }
   await handleTruckQuery(text, ctx);
 });
@@ -1059,38 +1075,143 @@ bot.on('text', async (ctx) => {
 async function handleTruckQuery(text, ctx) {
     let action = 'truckQuery';
     let query = {};
+    
+    // Normalize text - make case insensitive and clean up
+    const normalizedText = text.toLowerCase().replace(/\s+/g, ' ').trim();
 
-    // Simple keyword/regex parsing instead of NLP
-    const consignorMatch = text.match(/for\s+([A-Z\s\d]+)/i);
+    // Enhanced consignor matching - more flexible patterns
+    let consignorMatch = normalizedText.match(/(?:for|trucks?\s+for)\s+([a-z\s\d&.-]+?)(?:\s+that|\s+left|\s+entries|$)/i);
+    if (!consignorMatch) {
+        // Try alternative patterns
+        consignorMatch = normalizedText.match(/([a-z\s\d&.-]+)\s+trucks?/i);
+    }
+    
     if (consignorMatch) {
-        query.consignor = consignorMatch[1].trim();
+        let consignor = consignorMatch[1].trim();
+        // Clean up common words that might be captured
+        consignor = consignor.replace(/^(trucks?|for|the)\s+/i, '').replace(/\s+(trucks?|that|left|entries)$/i, '');
+        if (consignor.length > 1) {
+            query.consignor = consignor;
+        }
     }
 
-    const truckIdMatch = text.match(/\b([A-Z]{2,3}\s?\d{3,4}[A-Z])\b/i);
+    // Enhanced truck ID matching - more flexible
+    const truckIdMatch = text.match(/\b([A-Z]{2,4}\s*\d{3,4}\s*[A-Z]{0,2})\b/i);
     if (truckIdMatch) {
-        query.truckId = truckIdMatch[1].replace(/\s/, ''); // Normalize truck ID
+        query.truckId = truckIdMatch[1].replace(/\s+/g, ''); // Remove all spaces
     }
 
-    if (text.includes('left')) {
+    // Status and column filters
+    if (normalizedText.includes('left')) {
         query.status = 'left';
     }
 
-    if (text.includes('entries')) {
+    if (normalizedText.includes('entries') || normalizedText.includes('entry')) {
         query.column = 'TR812(s)';
     }
+
+    // Show what we're searching for
+    let searchDescription = 'trucks';
+    if (query.consignor) searchDescription += ` for "${query.consignor.toUpperCase()}"`;
+    if (query.truckId) searchDescription += ` matching "${query.truckId.toUpperCase()}"`;
+    if (query.status === 'left') searchDescription += ' that have left';
+    if (query.column === 'TR812(s)') searchDescription += ' (entries focus)';
 
     try {
         const url = new URL(SCRIPT_URL);
         url.searchParams.append('action', action);
         url.searchParams.append('query', JSON.stringify(query));
 
-        await ctx.reply(`🔍 Searching with query: \`${JSON.stringify(query)}\`...`, { parse_mode: 'Markdown' });
+        await ctx.reply(`🔍 Searching for ${searchDescription}...`, { parse_mode: 'Markdown' });
 
         const response = await fetch(url.toString(), { method: 'GET' });
         const result = await response.json();
 
-        if (result.success) {
-            await ctx.reply(result.message);
+        if (result.success && result.data && Array.isArray(result.data)) {
+            // Format the results for better display
+            const trucks = result.data;
+            
+            if (trucks.length === 0) {
+                await ctx.reply(`No trucks found for query: ${searchDescription}`);
+                return;
+            }
+
+            // Create summary message
+            let reply = `🚚 *Found ${trucks.length} truck${trucks.length > 1 ? 's' : ''} for: ${searchDescription}*\n\n`;
+
+            trucks.forEach((truck, index) => {
+                const rowNum = truck.rowNumber || truck.Row || (index + 2); // Assume row 2+ if not provided
+                const regNo = truck['Reg No'] || truck.reg_no || truck.RegNo || 'Unknown';
+                const consignor = truck.Consignor || truck.consignor || 'N/A';
+                const location = truck.Location || truck.location || 'N/A';
+                const driver = truck.Driver || truck.driver || truck['Driver Name'] || 'N/A';
+                
+                // Status indicators
+                const leftStatus = truck['Left Depot'] || truck.leftDepot || truck.Left || '';
+                const gateOut = truck['GATEPASS GATE OUT'] || truck.gateOut || '';
+                
+                reply += `*${index + 1}. ${regNo}* (Row ${rowNum})\n`;
+                reply += `   Company: ${consignor}\n`;
+                reply += `   Location: ${location}\n`;
+                reply += `   Driver: ${driver}\n`;
+                
+                // Add key status fields if available
+                const statusFields = [];
+                
+                if (truck['SSRA COMMENT']) statusFields.push(`SSRA: ${truck['SSRA COMMENT']}`);
+                if (truck['DRC COMMENT']) statusFields.push(`DRC: ${truck['DRC COMMENT']}`);
+                if (truck['HVO COMMENT']) statusFields.push(`HVO: ${truck['HVO COMMENT']}`);
+                if (truck.ARMING) statusFields.push(`Arming: ${truck.ARMING}`);
+                if (truck.SEALS) statusFields.push(`Seals: ${truck.SEALS}`);
+                if (gateOut) statusFields.push(`Gate Out: ${gateOut}`);
+                if (leftStatus) statusFields.push(`Left: ${leftStatus}`);
+                
+                if (statusFields.length > 0) {
+                    reply += `   Status: ${statusFields.slice(0, 2).join(', ')}\n`; // Limit to first 2 to avoid long messages
+                    if (statusFields.length > 2) {
+                        reply += `   More: ${statusFields.slice(2).join(', ')}\n`;
+                    }
+                }
+                
+                reply += '\n';
+            });
+
+            // Add summary statistics if multiple trucks
+            if (trucks.length > 1) {
+                const leftCount = trucks.filter(t => t['Left Depot'] || t.leftDepot || t.Left).length;
+                const armedCount = trucks.filter(t => t.ARMING && t.ARMING.toLowerCase().includes('armed')).length;
+                
+                reply += `📊 *Summary:*\n`;
+                reply += `• Total trucks: ${trucks.length}\n`;
+                if (leftCount > 0) reply += `• Left depot: ${leftCount}\n`;
+                if (armedCount > 0) reply += `• Armed: ${armedCount}\n`;
+            }
+
+            // Split message if too long (Telegram limit is ~4096 chars)
+            if (reply.length > 4000) {
+                const messages = [];
+                const lines = reply.split('\n');
+                let currentMessage = '';
+                
+                for (const line of lines) {
+                    if ((currentMessage + line + '\n').length > 4000) {
+                        messages.push(currentMessage);
+                        currentMessage = line + '\n';
+                    } else {
+                        currentMessage += line + '\n';
+                    }
+                }
+                if (currentMessage) messages.push(currentMessage);
+                
+                for (const msg of messages) {
+                    await ctx.replyWithMarkdown(msg);
+                }
+            } else {
+                await ctx.replyWithMarkdown(reply);
+            }
+            
+        } else if (result.success) {
+            await ctx.reply(result.message || 'Query completed but no detailed data available.');
         } else {
             await ctx.reply(`⚠️ ${result.message || 'Could not retrieve information.'}`);
         }
