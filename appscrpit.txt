@@ -55,20 +55,7 @@ function handleTruckQuery(query) {
   var results = data.filter(function(row) {
     var match = true;
     
-    if (query.consignor) {
-      var consignorCol = headers.indexOf('CONSIGNOR');
-      if (row[consignorCol].toUpperCase() !== query.consignor.toUpperCase()) {
-        match = false;
-      }
-    }
-    
-    if (query.truckId) {
-      var truckNoCol = headers.indexOf('TRUCK No.');
-      if (row[truckNoCol].toUpperCase() !== query.truckId.toUpperCase()) {
-        match = false;
-      }
-    }
-    
+    // If dateRange is specified, filter by date (e.g. today, yesterday, etc.)
     if (query.dateRange) {
       var loadingDateCol = headers.indexOf('LOADING DATE');
       var loadingDate = new Date(row[loadingDateCol]);
@@ -92,14 +79,26 @@ function handleTruckQuery(query) {
         }
       }
     }
-    
+
+    // If no dateRange, search throughout the sheet (all rows)
+    if (query.consignor) {
+      var consignorCol = headers.indexOf('CONSIGNOR');
+      if (row[consignorCol].toUpperCase() !== query.consignor.toUpperCase()) {
+        match = false;
+      }
+    }
+    if (query.truckId) {
+      var truckNoCol = headers.indexOf('TRUCK No.');
+      if (row[truckNoCol].toUpperCase() !== query.truckId.toUpperCase()) {
+        match = false;
+      }
+    }
     if (query.status === 'left') {
       var gateOutCol = headers.indexOf('GATE OUT');
       if (!row[gateOutCol]) {
         match = false;
       }
     }
-    
     return match;
   });
   

@@ -1072,6 +1072,11 @@ bot.on('text', async (ctx) => {
   }
 });
 
+// In handleTruckQuery, for /query with a consignor/company name, the bot now always fetches a large batch of trucks (limit: 1000) and does the company name (consignor) partial match filtering locally in Node.js, not on the backend.
+// This ensures that queries like "/query trucks for MOK" or "/query trucks for MOK PETRO ENERGY LIMITED" will work even if the backend only supports exact matches.
+// The filtering is case-insensitive and matches anywhere in the consignor/company name string.
+// This makes the bot much more robust and user-friendly for company/consignor queries, regardless of backend limitations.
+
 async function handleTruckQuery(text, ctx) {
     let action = 'truckQuery';
     let query = {};
@@ -1120,14 +1125,14 @@ async function handleTruckQuery(text, ctx) {
     if (query.column === 'TR812(s)') searchDescription += ' (entries focus)';
 
     try {
-        // If searching by consignor, always fetch a reasonable batch and filter locally for speed and flexibility
+        // Always fetch a batch and filter locally for consignor queries for best partial match support
         if (query.consignor && !query.truckId) {
             await ctx.reply(`🔍 Searching for ${searchDescription}...`, { parse_mode: 'Markdown' });
 
-            // Fetch a batch of trucks (limit as needed, e.g. 500)
+            // Fetch a batch of trucks (limit as needed, e.g. 1000 for better coverage)
             const allUrl = new URL(SCRIPT_URL);
             allUrl.searchParams.append('action', action);
-            allUrl.searchParams.append('query', JSON.stringify({ limit: 500 }));
+            allUrl.searchParams.append('query', JSON.stringify({ limit: 1000 }));
 
             let response = await fetch(allUrl.toString(), { method: 'GET' });
             let result = await response.json();
@@ -1135,22 +1140,22 @@ async function handleTruckQuery(text, ctx) {
             if (result.success && result.data && Array.isArray(result.data)) {
                 const searchTerm = query.consignor.toLowerCase();
                 let trucks = result.data.filter(truck => {
+                    // Try all possible fields and allow partial match anywhere in the string
                     const consignorField =
-                        truck.CONSIGNOR || truck.Consignor || truck.consignor || '';
-                    return consignorField.toLowerCase().includes(searchTerm);
+                        (truck.CONSIGNOR || truck.Consignor || truck.consignor || '').toString().toLowerCase();
+                    return consignorField.includes(searchTerm);
                 });
 
                 // Optionally filter by status/column if present
                 if (query.status) {
                     trucks = trucks.filter(truck =>
-                        (truck['Left Depot'] || truck.leftDepot || truck.Left || '').toLowerCase().includes('left')
+                        (truck['Left Depot'] || truck.leftDepot || truck.Left || '').toString().toLowerCase().includes('left')
                     );
                 }
                 if (query.column === 'TR812(s)') {
                     trucks = trucks.filter(truck => truck['TR812(s)'] || truck.TR812s);
                 }
 
-                // ...existing code for formatting and replying with trucks...
                 if (trucks.length === 0) {
                     await ctx.reply(`No trucks found for query: ${searchDescription}\n\n💡 Try a shorter company name or check spelling.`, { parse_mode: 'Markdown' });
                     return;
@@ -1227,7 +1232,6 @@ async function handleTruckQuery(text, ctx) {
         }
 
         // Otherwise, fallback to original backend query for truckId or other queries
-        // ...existing code for backend fetch, formatting, and reply...
         // ...existing code...
     } catch (e) {
         console.error(`Error calling Google Script for truck query:`, e);
@@ -1283,3 +1287,4 @@ if (process.env.NODE_ENV !== 'production') {
 // initializeNlp();
 
 export default handler;  // Export the handler function instead of the bot
+
