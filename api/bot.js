@@ -40,12 +40,18 @@ const transporter = nodemailer.createTransport({
 async function fetchImageFromUrl(url) {
   if (!url) return null;
   try {
-    console.log(`Fetching image from URL: ${url}`);
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch image: ${response.status} ${response.statusText}`);
+    if (url.startsWith('http')) {
+      console.log(`Fetching image from URL: ${url}`);
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch image: ${response.status} ${response.statusText}`);
+      }
+      return await response.buffer();
+    } else {
+      // Local file path
+      const fs = await import('fs');
+      return fs.promises.readFile(url);
     }
-    return await response.buffer();
   } catch (error) {
     console.error(`Error fetching image from URL: ${error.message}`);
     return null;
@@ -140,11 +146,11 @@ async function generateReportPdf(data, reportType) {
             if (reportType === 'repair' && TANKER_IMAGE_URL) {
                 console.log(`[PDF Debug] Fetching tanker image from: ${TANKER_IMAGE_URL}`);
                 try {
-                    const response = await fetch(TANKER_IMAGE_URL);
-                    if (!response.ok) {
-                        throw new Error(`Failed to fetch image: ${response.status} ${response.statusText}`);
+                    // Use the helper for consistent buffer handling
+                    tankerImageBuffer = await fetchImageFromUrl(TANKER_IMAGE_URL);
+                    if (!tankerImageBuffer) {
+                        throw new Error("Tanker image buffer is empty or invalid format.");
                     }
-                    tankerImageBuffer = await response.buffer();
                     console.log(`[PDF Debug] Tanker image fetched successfully (${tankerImageBuffer.length} bytes)`);
                 } catch (fetchError) {
                     console.error("Error fetching tanker watermark image:", fetchError);
