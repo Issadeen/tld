@@ -686,7 +686,7 @@ async function notifyAdmin(msg) {
 
 // === COMMANDS ===
 bot.start((ctx) =>
-  ctx.reply('Welcome! Use /status <truckNo>, /row <rowNo>, /help, /format, /system, /testpdf, /newtruck')
+  ctx.reply('Welcome! Use /status <truckNo> [sheet], /row <rowNo>, /sheets, /help, /format, /system, /testpdf, /newtruck')
 );
 
 bot.command('help', (ctx) =>
@@ -694,16 +694,32 @@ bot.command('help', (ctx) =>
     `*Welcome to Issaerium bot chat, a smart way of working!* 🤖
 
 Commands:
-$status <reg_no> - Check truck status
+$status <reg_no> [sheet] - Check truck status (sheets: TRANSIT, SCT, ENTRIES)
 /row <row_no> - Get details for a specific row
 /query <text> - Ask about trucks (e.g., /query trucks for KPC that left)
 /report <truckNo> - Email a repair report
 /format - Show format instructions
 /system - Show bot system status
+/sheets - List available sheets for lookups
 /testpdf - Generate sample PDF
 /newtruck - Guided truck entry wizard
 
 Send plain text for maintenance/overnight/overstay reports.
+`,
+    { parse_mode: 'Markdown' }
+  )
+);
+
+bot.command('sheets', (ctx) =>
+  ctx.reply(
+    `*Available Sheets for Truck Lookups:*
+
+• *TRANSIT* - Main transit sheet (default)
+• *SCT* - SCT sheet for special cargo tracking
+• *ENTRIES* - Entry records sheet
+
+To specify a sheet when checking status:
+\`status KBQ832 SCT\` or \`/status KBQ832 SCT\`
 `,
     { parse_mode: 'Markdown' }
   )
@@ -733,13 +749,26 @@ hours: 48
 
 bot.command('status', async (ctx) => {
   const args = ctx.message.text.split(' ');
-  if (args.length < 2) return ctx.reply('Usage: /status <truckNo>');
-  const truck = args.slice(1).join(' ');
+  if (args.length < 2) return ctx.reply('Usage: /status <truckNo> [sheet]');
+  
+  // Parse input to check for sheet name
+  let truck = '';
+  let sheet = 'TRANSIT'; // Default sheet
+  
+  // Check if the last argument is a sheet name
+  const knownSheets = ['TRANSIT', 'SCT', 'ENTRIES'];
+  if (args.length > 2 && knownSheets.includes(args[args.length-1].toUpperCase())) {
+    sheet = args[args.length-1].toUpperCase();
+    truck = args.slice(1, args.length-1).join(' ');
+  } else {
+    truck = args.slice(1).join(' ');
+  }
+  
   try {
-    // Add confirmation message
-    await ctx.reply(`🔍 Searching for truck status: "${truck}"...`);
+    // Add confirmation message with sheet information
+    await ctx.reply(`🔍 Searching for truck "${truck}" in ${sheet} sheet...`);
     
-    const url = `${SCRIPT_URL}?action=getTruckStatus&sheet=TRANSIT&query=${encodeURIComponent(truck)}`;
+    const url = `${SCRIPT_URL}?action=getTruckStatus&sheet=${sheet}&query=${encodeURIComponent(truck)}`;
     const res = await fetch(url);
     const json = await res.json();
     if (!json.success) throw new Error(json.message);
@@ -880,12 +909,28 @@ bot.command('testpdf', async (ctx) => {
 
 // === Plain text handlers for "status <truckNo>" and "row <rowNo>" ===
 bot.hears(/^status\s+(.+)/i, async (ctx) => {
-  const truck = ctx.match[1].trim();
+  const input = ctx.match[1].trim();
+  
+  // Parse input to check for sheet name
+  let truck = '';
+  let sheet = 'TRANSIT'; // Default sheet
+  
+  // Check if the input contains a sheet name
+  const knownSheets = ['TRANSIT', 'SCT', 'ENTRIES'];
+  const parts = input.split(' ');
+  
+  if (parts.length > 1 && knownSheets.includes(parts[parts.length-1].toUpperCase())) {
+    sheet = parts[parts.length-1].toUpperCase();
+    truck = parts.slice(0, parts.length-1).join(' ');
+  } else {
+    truck = input;
+  }
+  
   try {
-    // Add confirmation message
-    await ctx.reply(`🔍 Searching for truck status: "${truck}"...`);
+    // Add confirmation message with sheet information
+    await ctx.reply(`🔍 Searching for truck "${truck}" in ${sheet} sheet...`);
     
-    const url = `${SCRIPT_URL}?action=getTruckStatus&sheet=TRANSIT&query=${encodeURIComponent(truck)}`;
+    const url = `${SCRIPT_URL}?action=getTruckStatus&sheet=${sheet}&query=${encodeURIComponent(truck)}`;
     const res = await fetch(url);
     const json = await res.json();
     if (!json.success) throw new Error(json.message);
