@@ -1116,6 +1116,7 @@ async function handleTruckQuery(text, ctx) {
     }
 
     // Enhanced truck ID matching - more flexible but exclude keywords like SCT
+    const reservedWords = ['SCT', 'ROW']; but exclude keywords like SCT
     const reservedWords = ['SCT', 'ROW'];
     const truckIdMatch = text.match(/\b([A-Z]{2,4}\s*\d{3,4}\s*[A-Z]{0,2})\b/i);
     if (truckIdMatch && !reservedWords.includes(truckIdMatch[1].replace(/\s+/g, '').toUpperCase())) {
@@ -1488,7 +1489,5 @@ if (process.env.NODE_ENV !== 'production') {
 // initializeNlp();
 
 export default handler;  // Export the handler function instead of the bot
-
-
 
 

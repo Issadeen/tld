@@ -1489,6 +1489,3 @@ if (process.env.NODE_ENV !== 'production') {
 
 export default handler;  // Export the handler function instead of the bot
 
-
-
-
