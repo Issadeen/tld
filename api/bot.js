@@ -736,6 +736,9 @@ bot.command('status', async (ctx) => {
   if (args.length < 2) return ctx.reply('Usage: /status <truckNo>');
   const truck = args.slice(1).join(' ');
   try {
+    // Add confirmation message
+    await ctx.reply(`🔍 Searching for truck status: "${truck}"...`);
+    
     const url = `${SCRIPT_URL}?action=getTruckStatus&sheet=TRANSIT&query=${encodeURIComponent(truck)}`;
     const res = await fetch(url);
     const json = await res.json();
@@ -879,6 +882,9 @@ bot.command('testpdf', async (ctx) => {
 bot.hears(/^status\s+(.+)/i, async (ctx) => {
   const truck = ctx.match[1].trim();
   try {
+    // Add confirmation message
+    await ctx.reply(`🔍 Searching for truck status: "${truck}"...`);
+    
     const url = `${SCRIPT_URL}?action=getTruckStatus&sheet=TRANSIT&query=${encodeURIComponent(truck)}`;
     const res = await fetch(url);
     const json = await res.json();
@@ -1214,8 +1220,10 @@ async function handleTruckQuery(text, ctx) {
                         const arming = t.ARMING || t.arming || '';
                         return arming && arming.toLowerCase().includes('ok');
                     }).length;
+                    const gatepassCount = trucks.filter(t => t.GATEPASS || t.gatepass).length;
                     reply += `📊 *Summary:*\n`;
                     reply += `• Total trucks: ${trucks.length}\n`;
+                    if (gatepassCount > 0) reply += `• Gatepass issued: ${gatepassCount}\n`;
                     if (exitedCount > 0) reply += `• Exited KPC: ${exitedCount}\n`;
                     if (armedCount > 0) reply += `• Armed OK: ${armedCount}\n`;
                 }
@@ -1350,8 +1358,10 @@ async function handleTruckQuery(text, ctx) {
                         const arming = t.ARMING || t.arming || '';
                         return arming && arming.toLowerCase().includes('ok');
                     }).length;
+                    const gatepassCount = trucks.filter(t => t.GATEPASS || t.gatepass).length;
                     reply += `📊 *Summary:*\n`;
                     reply += `• Total trucks: ${trucks.length}\n`;
+                    if (gatepassCount > 0) reply += `• Gatepass issued: ${gatepassCount}\n`;
                     if (exitedCount > 0) reply += `• Exited KPC: ${exitedCount}\n`;
                     if (armedCount > 0) reply += `• Armed OK: ${armedCount}\n`;
                 }
