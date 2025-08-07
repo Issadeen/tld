@@ -31,6 +31,61 @@ const LOGO_IMAGE_URL = process.env.LOGO_IMAGE_URL;
 const COMPANY_NAME = process.env.COMPANY_NAME || "IA";
 const DEFAULT_RECIPIENTS = (process.env.DEFAULT_RECIPIENTS || '').split(',').map(e => e.trim()).filter(e => e);
 
+// === COMPANY WIZARD SYSTEM ===
+// Session management for company mode
+const userSessions = new Map(); // chatId -> { company: string, mode: string, timestamp: number }
+
+// Company access control - Add company chat IDs here
+const companyAccess = {
+  'aran': [
+    // Add Aran company user chat IDs here
+    // Example: 123456789, 987654321
+  ],
+  'mokpetro': [
+    // Add MokPetro company user chat IDs here
+  ],
+  // Add more companies as needed
+};
+
+// Admin has access to all companies
+if (ADMIN_CHAT_ID) {
+  const adminId = parseInt(ADMIN_CHAT_ID);
+  Object.keys(companyAccess).forEach(company => {
+    if (!companyAccess[company].includes(adminId)) {
+      companyAccess[company].push(adminId);
+    }
+  });
+}
+
+// Session timeout (30 minutes)
+const SESSION_TIMEOUT = 30 * 60 * 1000;
+
+// Helper functions for company wizard
+function hasCompanyAccess(chatId, company) {
+  return companyAccess[company] && companyAccess[company].includes(chatId);
+}
+
+function getUserSession(chatId) {
+  const session = userSessions.get(chatId);
+  if (session && (Date.now() - session.timestamp) > SESSION_TIMEOUT) {
+    userSessions.delete(chatId);
+    return null;
+  }
+  return session;
+}
+
+function setUserSession(chatId, company, mode = 'company') {
+  userSessions.set(chatId, {
+    company,
+    mode,
+    timestamp: Date.now()
+  });
+}
+
+function clearUserSession(chatId) {
+  userSessions.delete(chatId);
+}
+
 const bot = new Telegraf(TELEGRAM_TOKEN);
 
 // === Email Transport ===
@@ -686,29 +741,54 @@ async function notifyAdmin(msg) {
 
 // === COMMANDS ===
 bot.start((ctx) =>
-  ctx.reply('Welcome! Use /status <truckNo> [sheet], /row <rowNo>, /sheets, /help, /format, /system, /testpdf, /newtruck')
+  ctx.reply('Welcome! Use /status <truckNo> [sheet], /row <rowNo>, /sheets, /help, /format, /system, /testpdf, /newtruck, or CO <company> for company mode')
 );
 
-bot.command('help', (ctx) =>
-  ctx.reply(
+bot.command('help', (ctx) => {
+  const session = getUserSession(ctx.chat.id);
+  
+  if (session && session.mode === 'company') {
+    // Company mode help
+    return ctx.reply(
+      `🏢 *${session.company.toUpperCase()} Company Mode*
+
+Available commands:
+• *status <truck>* - Check truck status
+• *trucks* - List all company trucks  
+• *driver <name>* - Find driver information
+• *pms <truck>* - Check PMS schedule
+• *fleet* - Company fleet summary
+• *exit* - Return to main mode
+
+Type any command or truck number to get started.
+`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+  
+  // Main mode help
+  return ctx.reply(
     `*Welcome to Issaerium bot chat, a smart way of working!* 🤖
 
 Commands:
-$status <reg_no> [sheet] - Check truck status (sheets: TRANSIT, SCT, ENTRIES)
-/row <row_no> - Get details for a specific row
-/query <text> - Ask about trucks (e.g., /query trucks for KPC that left)
-/report <truckNo> - Email a repair report
-/format - Show format instructions
-/system - Show bot system status
-/sheets - List available sheets for lookups
-/testpdf - Generate sample PDF
-/newtruck - Guided truck entry wizard
+• /status <reg_no> [sheet] - Check truck status (sheets: TRANSIT, SCT, ENTRIES)
+• /row <row_no> - Get details for a specific row
+• /query <text> - Ask about trucks (e.g., /query trucks for KPC that left)
+• /report <truckNo> - Email a repair report
+• /format - Show format instructions
+• /system - Show bot system status
+• /sheets - List available sheets for lookups
+• /testpdf - Generate sample PDF
+• /newtruck - Guided truck entry wizard
+
+*Company Access:*
+• CO <company> - Enter company mode (e.g., CO Aran)
 
 Send plain text for maintenance/overnight/overstay reports.
 `,
     { parse_mode: 'Markdown' }
-  )
-);
+  );
+});
 
 bot.command('sheets', (ctx) =>
   ctx.reply(
@@ -907,8 +987,289 @@ bot.command('testpdf', async (ctx) => {
   }
 });
 
+// === COMPANY WIZARD COMMANDS ===
+// Company entry command
+bot.hears(/^CO\s+(\w+)/i, async (ctx) => {
+  const company = ctx.match[1].toLowerCase();
+  const chatId = ctx.chat.id;
+  
+  // Check if company exists and user has access
+  if (!companyAccess[company]) {
+    return ctx.reply(`❌ Company "${company}" not found.\n\nAvailable companies: ${Object.keys(companyAccess).join(', ')}`);
+  }
+  
+  if (!hasCompanyAccess(chatId, company)) {
+    return ctx.reply(`🚫 Access denied to ${company.toUpperCase()} company data.\n\nContact admin for access.`);
+  }
+  
+  // Set user session
+  setUserSession(chatId, company);
+  
+  await ctx.reply(
+    `🏢 *Welcome to ${company.toUpperCase()} Company Mode*
+
+You now have access to ${company.toUpperCase()} company data.
+
+*Available Commands:*
+• \`status <truck>\` - Check truck status
+• \`trucks\` - List all company trucks
+• \`driver <name>\` - Find driver information  
+• \`pms <truck>\` - Check PMS schedule
+• \`fleet\` - Company fleet summary
+• \`exit\` - Return to main mode
+
+Type any command to get started!
+`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// Exit company mode
+bot.hears(/^exit$/i, async (ctx) => {
+  const session = getUserSession(ctx.chat.id);
+  
+  if (session && session.mode === 'company') {
+    clearUserSession(ctx.chat.id);
+    return ctx.reply(`👋 Exited ${session.company.toUpperCase()} company mode.\n\nYou're back to main bot functionality.`);
+  }
+  
+  return ctx.reply('You are not in company mode.');
+});
+
+// Company-specific commands
+bot.hears(/^trucks$/i, async (ctx) => {
+  const session = getUserSession(ctx.chat.id);
+  
+  if (!session || session.mode !== 'company') {
+    return; // Let other handlers process this
+  }
+  
+  try {
+    await ctx.reply(`🔍 Loading ${session.company.toUpperCase()} fleet data...`);
+    
+    const url = `${SCRIPT_URL}?action=getCompanyTrucks&company=${encodeURIComponent(session.company)}`;
+    const response = await fetch(url);
+    const data = await response.json();
+    
+    if (!data.success) {
+      return ctx.reply(`❌ Error loading fleet data: ${data.error || 'Unknown error'}`);
+    }
+    
+    const trucks = data.trucks || [];
+    
+    if (trucks.length === 0) {
+      return ctx.reply(`📋 No trucks found for ${session.company.toUpperCase()}.`);
+    }
+    
+    let reply = `🚛 *${session.company.toUpperCase()} Fleet (${trucks.length} trucks)*\n\n`;
+    
+    trucks.forEach((truck, index) => {
+      const reg = truck.registration || truck.reg_no || truck.REGISTRATION || 'N/A';
+      const driver = truck.driver || truck.driver_name || truck.DRIVER || 'N/A';
+      const status = truck.status || truck.STATUS || 'Active';
+      
+      reply += `${index + 1}. *${reg}*\n`;
+      reply += `   Driver: ${driver}\n`;
+      reply += `   Status: ${status}\n\n`;
+    });
+    
+    await ctx.reply(reply, { parse_mode: 'Markdown' });
+    
+  } catch (error) {
+    console.error('Error fetching company trucks:', error);
+    await ctx.reply('❌ Error loading fleet data. Please try again.');
+  }
+});
+
+bot.hears(/^driver\s+(.+)/i, async (ctx) => {
+  const session = getUserSession(ctx.chat.id);
+  
+  if (!session || session.mode !== 'company') {
+    return; // Let other handlers process this
+  }
+  
+  const driverName = ctx.match[1].trim();
+  
+  try {
+    await ctx.reply(`🔍 Searching for driver "${driverName}" in ${session.company.toUpperCase()}...`);
+    
+    const url = `${SCRIPT_URL}?action=getCompanyDriver&company=${encodeURIComponent(session.company)}&driver=${encodeURIComponent(driverName)}`;
+    const response = await fetch(url);
+    const data = await response.json();
+    
+    if (!data.success) {
+      return ctx.reply(`❌ Error searching driver: ${data.error || 'Unknown error'}`);
+    }
+    
+    const drivers = data.drivers || [];
+    
+    if (drivers.length === 0) {
+      return ctx.reply(`👤 No driver found matching "${driverName}" in ${session.company.toUpperCase()}.`);
+    }
+    
+    let reply = `👤 *Driver Search Results*\n\n`;
+    
+    drivers.forEach((driver, index) => {
+      const name = driver.driver_name || driver.name || driver.DRIVER || 'N/A';
+      const phone = driver.phone || driver.mobile || driver.PHONE || 'N/A';
+      const truck = driver.registration || driver.truck || driver.REG_NO || 'N/A';
+      const id = driver.id || driver.driver_id || 'N/A';
+      
+      reply += `${index + 1}. *${name}*\n`;
+      reply += `   📱 Phone: ${phone}\n`;
+      reply += `   🚛 Truck: ${truck}\n`;
+      reply += `   🆔 ID: ${id}\n\n`;
+    });
+    
+    await ctx.reply(reply, { parse_mode: 'Markdown' });
+    
+  } catch (error) {
+    console.error('Error searching driver:', error);
+    await ctx.reply('❌ Error searching driver. Please try again.');
+  }
+});
+
+bot.hears(/^pms\s+(.+)/i, async (ctx) => {
+  const session = getUserSession(ctx.chat.id);
+  
+  if (!session || session.mode !== 'company') {
+    return; // Let other handlers process this
+  }
+  
+  const truckNo = ctx.match[1].trim();
+  
+  try {
+    await ctx.reply(`🔧 Checking PMS schedule for "${truckNo}" in ${session.company.toUpperCase()}...`);
+    
+    const url = `${SCRIPT_URL}?action=getCompanyPMS&company=${encodeURIComponent(session.company)}&truck=${encodeURIComponent(truckNo)}`;
+    const response = await fetch(url);
+    const data = await response.json();
+    
+    if (!data.success) {
+      return ctx.reply(`❌ Error checking PMS: ${data.error || 'Unknown error'}`);
+    }
+    
+    const pmsData = data.pms;
+    
+    if (!pmsData) {
+      return ctx.reply(`🔧 No PMS data found for "${truckNo}" in ${session.company.toUpperCase()}.`);
+    }
+    
+    let reply = `🔧 *PMS Schedule for ${truckNo}*\n\n`;
+    reply += `📅 Last Service: ${pmsData.last_service || 'N/A'}\n`;
+    reply += `📅 Next Service: ${pmsData.next_service || 'N/A'}\n`;
+    reply += `📏 Current KM: ${pmsData.current_km || 'N/A'}\n`;
+    reply += `📏 Service KM: ${pmsData.service_km || 'N/A'}\n`;
+    reply += `⚠️ Status: ${pmsData.status || 'N/A'}\n`;
+    
+    if (pmsData.notes) {
+      reply += `📝 Notes: ${pmsData.notes}\n`;
+    }
+    
+    await ctx.reply(reply, { parse_mode: 'Markdown' });
+    
+  } catch (error) {
+    console.error('Error checking PMS:', error);
+    await ctx.reply('❌ Error checking PMS. Please try again.');
+  }
+});
+
+bot.hears(/^fleet$/i, async (ctx) => {
+  const session = getUserSession(ctx.chat.id);
+  
+  if (!session || session.mode !== 'company') {
+    return; // Let other handlers process this
+  }
+  
+  try {
+    await ctx.reply(`📊 Loading ${session.company.toUpperCase()} fleet summary...`);
+    
+    const url = `${SCRIPT_URL}?action=getCompanyFleetSummary&company=${encodeURIComponent(session.company)}`;
+    const response = await fetch(url);
+    const data = await response.json();
+    
+    if (!data.success) {
+      return ctx.reply(`❌ Error loading fleet summary: ${data.error || 'Unknown error'}`);
+    }
+    
+    const summary = data.summary;
+    
+    let reply = `📊 *${session.company.toUpperCase()} Fleet Summary*\n\n`;
+    reply += `🚛 Total Trucks: ${summary.total_trucks || 0}\n`;
+    reply += `✅ Active: ${summary.active_trucks || 0}\n`;
+    reply += `🔧 In Service: ${summary.in_service || 0}\n`;
+    reply += `⚠️ Maintenance Due: ${summary.maintenance_due || 0}\n`;
+    reply += `📍 On Transit: ${summary.on_transit || 0}\n`;
+    
+    if (summary.upcoming_services && summary.upcoming_services.length > 0) {
+      reply += `\n🔧 *Upcoming Services:*\n`;
+      summary.upcoming_services.forEach(service => {
+        reply += `• ${service.truck} - ${service.due_date}\n`;
+      });
+    }
+    
+    await ctx.reply(reply, { parse_mode: 'Markdown' });
+    
+  } catch (error) {
+    console.error('Error loading fleet summary:', error);
+    await ctx.reply('❌ Error loading fleet summary. Please try again.');
+  }
+});
+
 // === Plain text handlers for "status <truckNo>" and "row <rowNo>" ===
 bot.hears(/^status\s+(.+)/i, async (ctx) => {
+  const session = getUserSession(ctx.chat.id);
+  
+  // If in company mode, use company data
+  if (session && session.mode === 'company') {
+    const truckNo = ctx.match[1].trim();
+    
+    try {
+      await ctx.reply(`🔍 Searching for truck "${truckNo}" in ${session.company.toUpperCase()}...`);
+      
+      const url = `${SCRIPT_URL}?action=getCompanyTruckStatus&company=${encodeURIComponent(session.company)}&truck=${encodeURIComponent(truckNo)}`;
+      const response = await fetch(url);
+      const data = await response.json();
+      
+      if (!data.success) {
+        return ctx.reply(`❌ Error loading truck data: ${data.error || 'Unknown error'}`);
+      }
+      
+      const truck = data.truck;
+      
+      if (!truck) {
+        return ctx.reply(`🚛 No truck found matching "${truckNo}" in ${session.company.toUpperCase()}.`);
+      }
+      
+      let reply = `🚛 *${truck.registration || truck.reg_no || truckNo}*\n\n`;
+      reply += `👤 Driver: ${truck.driver || truck.driver_name || 'N/A'}\n`;
+      reply += `📱 Phone: ${truck.phone || truck.mobile || 'N/A'}\n`;
+      reply += `🆔 Driver ID: ${truck.driver_id || 'N/A'}\n`;
+      reply += `⚡ Status: ${truck.status || 'Active'}\n`;
+      
+      if (truck.location) {
+        reply += `📍 Location: ${truck.location}\n`;
+      }
+      
+      if (truck.last_service) {
+        reply += `🔧 Last Service: ${truck.last_service}\n`;
+      }
+      
+      if (truck.next_service) {
+        reply += `🔧 Next Service: ${truck.next_service}\n`;
+      }
+      
+      await ctx.reply(reply, { parse_mode: 'Markdown' });
+      
+    } catch (error) {
+      console.error('Error fetching company truck status:', error);
+      await ctx.reply('❌ Error loading truck data. Please try again.');
+    }
+    
+    return; // Exit early for company mode
+  }
+  
+  // Original logic for main mode
   const input = ctx.match[1].trim();
   
   // Parse input to check for sheet name
